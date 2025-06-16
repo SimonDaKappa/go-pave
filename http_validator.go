@@ -28,7 +28,7 @@ const (
 )
 
 // HTTPValidator is a type alias for Validator for HTTP requests.
-type HTTPValidator = Validator[*HTTPRequestParser, Validatable]
+type HTTPValidator = Validator[*HTTPRequestParser]
 
 // HTTPRequestParser is the implementation of ValidationParser for
 // http.Request data sources.
