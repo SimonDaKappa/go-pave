@@ -1,7 +1,6 @@
 package pave
 
 import (
-	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -12,39 +11,53 @@ import (
 	"github.com/tidwall/gjson"
 )
 
-const (
-	JSONSourceTag   = "json"
-	CookieSourceTag = "cookie"
-	HeaderSourceTag = "header"
-	QuerySourceTag  = "query"
-)
+const ()
 
 var (
 	__httpRequestType = reflect.TypeOf((*http.Request)(nil))
+
+	__compTimeCheckImplementsMultiSourceParser MultipleSourceParser = &HTTPRequestParser{}
 )
 
-// HTTPRequestParser implements SourceParser for HTTP requests
+// HTTPRequestParser implements MultipleSourceParser for HTTP requests
 type HTTPRequestParser struct {
-	chains     map[reflect.Type]*BaseExecutionChain
-	chainMutex sync.RWMutex
+	BaseMultipleSourceParser
 }
 
 // HTTPRequestData holds parsed HTTP request data to avoid re-parsing
 type HTTPRequestData struct {
-	request   *http.Request
+	request *http.Request
+	// Cached JSON body to avoid repeated parsing
 	jsonBody  gjson.Result
 	bodyOnce  sync.Once
 	bodyError error
+	// Cache query parameters to avoid repeated URL.Query() calls
+	queryParams map[string][]string
+	queryOnce   sync.Once
+
+	headers     map[string]string // Cached headers for quick access
+	headersOnce sync.Once
+
+	cookies     map[string]*http.Cookie // Cached cookies for quick access
+	cookiesOnce sync.Once
 }
 
 func NewHTTPRequestParser() *HTTPRequestParser {
-	return &HTTPRequestParser{
-		chains: make(map[reflect.Type]*BaseExecutionChain),
-	}
+	hp := &HTTPRequestParser{}
+	hp.BaseMultipleSourceParser = NewBaseMultipleSourceParser(
+		hp.parseFieldSources,
+		hp.getValueFromSource,
+	)
+
+	return hp
 }
 
 func (hp *HTTPRequestParser) GetSourceType() reflect.Type {
 	return __httpRequestType
+}
+
+func (hp *HTTPRequestParser) GetParserName() string {
+	return HTTPRequestParserName
 }
 
 func (hp *HTTPRequestParser) Parse(source any, dest Validatable) error {
@@ -70,72 +83,6 @@ func (hp *HTTPRequestParser) Parse(source any, dest Validatable) error {
 
 	// Execute the chain with our HTTP-specific source getter
 	return chain.Execute(requestData, dest)
-}
-
-func (hp *HTTPRequestParser) GetParseChain(t reflect.Type) (*BaseExecutionChain, error) {
-	hp.chainMutex.RLock()
-	if chain, exists := hp.chains[t]; exists {
-		hp.chainMutex.RUnlock()
-		return chain, nil
-	}
-	hp.chainMutex.RUnlock()
-
-	return hp.BuildParseChain(t)
-}
-
-func (hp *HTTPRequestParser) BuildParseChain(t reflect.Type) (*BaseExecutionChain, error) {
-	chain, err := hp.buildChainForType(t)
-	if err != nil {
-		return nil, err
-	}
-
-	// RW Lock map edits
-	hp.chainMutex.Lock()
-	hp.chains[t] = chain
-	hp.chainMutex.Unlock()
-
-	return chain, nil
-}
-
-func (hp *HTTPRequestParser) buildChainForType(t reflect.Type) (*BaseExecutionChain, error) {
-	var head, current *ParseStep
-
-	for i := 0; i < t.NumField(); i++ {
-		field := t.Field(i)
-
-		// Skip unexported fields
-		if !field.IsExported() {
-			continue
-		}
-
-		sources := hp.parseFieldSources(field)
-		if len(sources) == 0 {
-			continue // Skip fields with no sources
-		}
-
-		step := &ParseStep{
-			FieldIndex: i,
-			FieldName:  field.Name,
-			Sources:    sources,
-		}
-
-		if head == nil {
-			head = step
-			current = step
-		} else {
-			current.Next = step
-			current = step
-		}
-	}
-
-	// Create the execution chain with our HTTP-specific source getter
-	execChain := &BaseExecutionChain{
-		StructType:   t,
-		Head:         head,
-		SourceGetter: hp.getValueFromSource,
-	}
-
-	return execChain, nil
 }
 
 func (hp *HTTPRequestParser) parseFieldSources(field reflect.StructField) []FieldSource {
@@ -233,19 +180,35 @@ func (hp *HTTPRequestParser) getJSONBody(data *HTTPRequestData) (gjson.Result, e
 }
 
 func (hp *HTTPRequestParser) getCookieValue(data *HTTPRequestData, name string) (any, bool, error) {
-	cookie, err := data.request.Cookie(name)
-	if err != nil && errors.Is(err, http.ErrNoCookie) {
+	// Parse cookies once and cache them
+	data.cookiesOnce.Do(func() {
+		data.cookies = make(map[string]*http.Cookie)
+		for _, cookie := range data.request.Cookies() {
+			data.cookies[cookie.Name] = cookie
+		}
+	})
+
+	cookie, exists := data.cookies[name]
+	if !exists {
 		return nil, false, nil
-	} else if err != nil {
-		return nil, false, err
 	}
 
 	return cookie.Value, true, nil
 }
 
 func (hp *HTTPRequestParser) getHeaderValue(data *HTTPRequestData, name string) (any, bool, error) {
-	value := data.request.Header.Get(name)
-	if value == "" {
+	// Parse headers once and cache them
+	data.headersOnce.Do(func() {
+		data.headers = make(map[string]string)
+		for key, values := range data.request.Header {
+			if len(values) > 0 {
+				data.headers[key] = values[0]
+			}
+		}
+	})
+
+	value, exists := data.headers[name]
+	if !exists || value == "" {
 		return nil, false, nil
 	}
 
@@ -258,7 +221,12 @@ func (hp *HTTPRequestParser) getHeaderValue(data *HTTPRequestData, name string) 
 }
 
 func (hp *HTTPRequestParser) getQueryValue(data *HTTPRequestData, name string) (any, bool, error) {
-	values, exists := data.request.URL.Query()[name]
+	// Parse query parameters once and cache them
+	data.queryOnce.Do(func() {
+		data.queryParams = data.request.URL.Query()
+	})
+
+	values, exists := data.queryParams[name]
 	if !exists || len(values) == 0 {
 		return nil, false, nil
 	}

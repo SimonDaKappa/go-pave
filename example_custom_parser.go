@@ -9,9 +9,9 @@ import (
 
 // Example of how easy it is to create a custom parser with the new function-based approach
 
-// MapSourceParser demonstrates parsing from a simple map[string]string source
-type MapSourceParser struct {
-	chains     map[reflect.Type]*BaseExecutionChain
+// StringMapSourceParser demonstrates parsing from a simple map[string]string source
+type StringMapSourceParser struct {
+	chains     map[reflect.Type]*ParseExecutionChain
 	chainMutex sync.RWMutex
 }
 
@@ -19,17 +19,21 @@ const (
 	MapValueTag = "mapvalue" // Tag for specifying map keys
 )
 
-func NewMapSourceParser() *MapSourceParser {
-	return &MapSourceParser{
-		chains: make(map[reflect.Type]*BaseExecutionChain),
+func NewStringMapSourceParser() *StringMapSourceParser {
+	return &StringMapSourceParser{
+		chains: make(map[reflect.Type]*ParseExecutionChain),
 	}
 }
 
-func (msp *MapSourceParser) GetSourceType() reflect.Type {
+func (msp *StringMapSourceParser) GetSourceType() reflect.Type {
 	return reflect.TypeOf(map[string]string{})
 }
 
-func (msp *MapSourceParser) Parse(source any, dest Validatable) error {
+func (msp *StringMapSourceParser) GetParserName() string {
+	return "stringmap"
+}
+
+func (msp *StringMapSourceParser) Parse(source any, dest Validatable) error {
 	mapData, ok := source.(map[string]string)
 	if !ok {
 		return fmt.Errorf("expected map[string]string, got %T", source)
@@ -47,11 +51,11 @@ func (msp *MapSourceParser) Parse(source any, dest Validatable) error {
 		return err
 	}
 
-	// Execute the chain - notice how simple this is!
+	// Execute the chain
 	return chain.Execute(mapData, dest)
 }
 
-func (msp *MapSourceParser) GetParseChain(t reflect.Type) (*BaseExecutionChain, error) {
+func (msp *StringMapSourceParser) GetParseChain(t reflect.Type) (*ParseExecutionChain, error) {
 	msp.chainMutex.RLock()
 	if chain, exists := msp.chains[t]; exists {
 		msp.chainMutex.RUnlock()
@@ -62,7 +66,7 @@ func (msp *MapSourceParser) GetParseChain(t reflect.Type) (*BaseExecutionChain, 
 	return msp.BuildParseChain(t)
 }
 
-func (msp *MapSourceParser) BuildParseChain(t reflect.Type) (*BaseExecutionChain, error) {
+func (msp *StringMapSourceParser) BuildParseChain(t reflect.Type) (*ParseExecutionChain, error) {
 	var head, current *ParseStep
 
 	for i := 0; i < t.NumField(); i++ {
@@ -95,7 +99,7 @@ func (msp *MapSourceParser) BuildParseChain(t reflect.Type) (*BaseExecutionChain
 
 	// Create the execution chain with our map-specific source getter
 	// This is the ONLY function we need to implement that's specific to our source type!
-	execChain := &BaseExecutionChain{
+	execChain := &ParseExecutionChain{
 		StructType:   t,
 		Head:         head,
 		SourceGetter: msp.getValueFromMap, // <-- Our custom getter function
@@ -108,7 +112,7 @@ func (msp *MapSourceParser) BuildParseChain(t reflect.Type) (*BaseExecutionChain
 	return execChain, nil
 }
 
-func (msp *MapSourceParser) parseFieldSources(field reflect.StructField) []FieldSource {
+func (msp *StringMapSourceParser) parseFieldSources(field reflect.StructField) []FieldSource {
 	var sources []FieldSource
 
 	if tagValue := field.Tag.Get(MapValueTag); tagValue != "" && tagValue != "-" {
@@ -120,7 +124,7 @@ func (msp *MapSourceParser) parseFieldSources(field reflect.StructField) []Field
 	return sources
 }
 
-func (msp *MapSourceParser) parseSourceTag(tag string) FieldSource {
+func (msp *StringMapSourceParser) parseSourceTag(tag string) FieldSource {
 	parts := strings.Split(tag, ",")
 	source := FieldSource{
 		Key:      strings.TrimSpace(parts[0]),
@@ -142,7 +146,7 @@ func (msp *MapSourceParser) parseSourceTag(tag string) FieldSource {
 
 // This is the ONLY source-specific function we need to implement!
 // All the linked list traversal, field setting, error handling, etc. is handled by BaseExecutionChain
-func (msp *MapSourceParser) getValueFromMap(sourceData any, source FieldSource) (any, bool, error) {
+func (msp *StringMapSourceParser) getValueFromMap(sourceData any, source FieldSource) (any, bool, error) {
 	mapData, ok := sourceData.(map[string]string)
 	if !ok {
 		return nil, false, fmt.Errorf("expected map[string]string, got %T", sourceData)

@@ -6,9 +6,9 @@ import (
 
 func TestCustomMapParser(t *testing.T) {
 	// Create a validator with our custom map parser
-	mapParser := NewMapSourceParser()
+	mapParser := NewStringMapSourceParser()
 	validator, err := NewValidator(ValidatorOpts{
-		Parsers: []SourceParser{mapParser},
+		Parsers: []MultipleSourceParser{mapParser},
 	})
 	if err != nil {
 		t.Fatalf("Failed to create validator: %v", err)
@@ -43,9 +43,9 @@ func TestCustomMapParser(t *testing.T) {
 }
 
 func TestCustomParserWithMissingRequiredField(t *testing.T) {
-	mapParser := NewMapSourceParser()
+	mapParser := NewStringMapSourceParser()
 	validator, err := NewValidator(ValidatorOpts{
-		Parsers: []SourceParser{mapParser},
+		Parsers: []MultipleSourceParser{mapParser},
 	})
 	if err != nil {
 		t.Fatalf("Failed to create validator: %v", err)
@@ -67,9 +67,9 @@ func TestCustomParserWithMissingRequiredField(t *testing.T) {
 }
 
 func TestCustomParserWithOptionalFields(t *testing.T) {
-	mapParser := NewMapSourceParser()
+	mapParser := NewStringMapSourceParser()
 	validator, err := NewValidator(ValidatorOpts{
-		Parsers: []SourceParser{mapParser},
+		Parsers: []MultipleSourceParser{mapParser},
 	})
 	if err != nil {
 		t.Fatalf("Failed to create validator: %v", err)

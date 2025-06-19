@@ -10,7 +10,7 @@ import (
 )
 
 // Example struct that implements Validatable
-type User struct {
+type ExampleUser struct {
 	ID        uuid.UUID `header:"X-User-ID,omitempty" query:"user_id,omitempty" json:"id,omitempty"`
 	Name      string    `query:"name" json:"name"`
 	Email     string    `json:"email,omitempty"`
@@ -19,7 +19,7 @@ type User struct {
 	Age       int       `json:"age,omitempty"`
 }
 
-func (u *User) Validate() error {
+func (u *ExampleUser) Validate() error {
 	// Add your validation logic here
 	if u.Name == "" {
 		return ValidationError{reason: "name is required"}
@@ -50,7 +50,7 @@ func TestHTTPRequestParsing(t *testing.T) {
 	req.AddCookie(&http.Cookie{Name: "session_id", Value: "cookie-session-123"})
 
 	// Parse into struct
-	var user User
+	var user ExampleUser
 	err = validator.Validate(req, &user)
 	if err != nil {
 		t.Fatalf("Failed to validate: %v", err)
@@ -103,7 +103,7 @@ func TestHTTPRequestParsingFallback(t *testing.T) {
 		t.Fatalf("Failed to create request: %v", err)
 	}
 
-	var user User
+	var user ExampleUser
 	err = validator.Validate(req, &user)
 	if err != nil {
 		t.Fatalf("Failed to validate: %v", err)
@@ -131,7 +131,7 @@ func TestExecutionChainCaching(t *testing.T) {
 	httpParser := validator.HTTPParser
 
 	// Get chain for User type
-	userType := reflect.TypeOf(User{})
+	userType := reflect.TypeOf(ExampleUser{})
 	chain1, err := httpParser.GetParseChain(userType)
 	if err != nil {
 		t.Fatalf("Failed to get parse chain: %v", err)
@@ -168,7 +168,41 @@ func BenchmarkParseChainExecution(b *testing.B) {
 
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		var user User
+		var user ExampleUser
+		err := validator.Validate(req, &user)
+		if err != nil {
+			b.Fatalf("Failed to validate: %v", err)
+		}
+	}
+}
+
+func BenchmarkParseChainExecutionCached(b *testing.B) {
+	validator, err := NewValidator(ValidatorOpts{})
+	if err != nil {
+		b.Fatalf("Failed to create validator: %v", err)
+	}
+
+	httpParser := validator.HTTPParser
+	userType := reflect.TypeOf(ExampleUser{})
+
+	// Pre-cache the chain
+	_, err = httpParser.GetParseChain(userType)
+	if err != nil {
+		b.Fatalf("Failed to pre-cache parse chain: %v", err)
+	}
+
+	// Create a test request
+	jsonBody := `{"id": "123e4567-e89b-12d3-a456-426614174000", "name": "John Doe", "email": "john@example.com", "age": 30}`
+	req, err := http.NewRequest("POST", "http://example.com/users?name=QueryName&session=sess123", bytes.NewBufferString(jsonBody))
+	if err != nil {
+		b.Fatalf("Failed to create request: %v", err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Authorization", "Bearer secret-token")
+
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		var user ExampleUser
 		err := validator.Validate(req, &user)
 		if err != nil {
 			b.Fatalf("Failed to validate: %v", err)
