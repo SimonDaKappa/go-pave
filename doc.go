@@ -32,7 +32,7 @@
 //     These parsers do not support multiple sources for a single field.
 //   - MultipleSourceParser: Parses from sources with multiple interaction methods,
 //     such as a HTTP request. These parsers build a ParseExecutionChain (see
-//     [ParseChainBuilder](https://pkg.go.dev/pave#ChainExecutor) and
+//     [parseChainBuilder](https://pkg.go.dev/pave#ChainExecutor) and
 //     [ParseChain](https://pkg.go.dev/pave#ParseExecutionChain)) that allows
 //     you to extract data from various sources like cookies, headers, query parameters,
 //     and the body of the request. Execution chains allow for flexible fallbacks
@@ -55,51 +55,19 @@ package pave
 
 /**
 PLANNING:
-- Add support for default values modifiers in tags, e.g., `default:"value"`.
-- Add support for recursive parsing of nested structs.
+- Add support for default values modifiers in tags, e.g., `default:"value"`. (DONEish, need to add support for automatic default value type conversion)
+- Add support for recursive parsing of nested structs. (PARTIAL: Nested structs by default recurse, but need to add support for nonrecursive struct parsing)
 - Add support for automatic validation generation
     1. Support builtin validation library and integration. to other libraries (for instance go-playground validation)
     2. Must be able to validate for Validatable or for types that can possibly be converted to Validatable by boxing them
     3. Build Tags for enabling integrations/featureflags
-- Formalize tag grammar, create generic tag parser for MultiStepSourceParser and OneShotSourceParser
+- Formalize tag grammar, create generic tag parser for MultiStepSourceParser and OneShotSourceParser (DONE)
     - Tag grammar shown below.
-    - Multi-step tag parsers should function similarly to BaseChainExecutor. i.e., it should parse according
-      to the complete grammar, but source parser specific tags should be referenced by a sourceTagFn that
-      creates the FieldSource for the execution chain if the tag is recognized
 - Tag aliasing.
 - Global Tag String White/Blacklist registry
-    - Allow per tag parse includes/excludes but also global exludes that can be set.
-
-v0.1.0 Tag Notes:
-Tag grammar:
-    <field> <type> <tag>
-field:
-    <string>
-type:
-    <Type>
-tag:
-    '<parse_tag> <validate_tag>'
-
-parse_tag:
-    parse:"<default_tag> <source_tag_list>"
-
-default_tag:
-    default:'<default_value>'
-default_value:
-    <Go Literal>
-
-source_tag_list:
-    [<source_tag>]^*
-source_tag:
-    <source_name>:'<source_identifier>,<source_modifier_list>' // source tags are parser specific but must follow this grammar
-source_name, source_identifier:
-    <string>
-source_modifier_list:
-    [source_modifier]^* // Delimeted with "," end-delim optional
-source_modifier:
-    omitempty | omiterr | omitnil | ... // (any other modifiers past this point are parser specific)
-
-validate_tag
-    validate:"<...>" | nil
-
+    - Allow per tag parse includes/excludes but also global excludes that can be set. (WIP)
+- Split Package into PAVE-Parser and PAVE-Validator
+- Implement Validation
+- Add support for custom parsers that can be registered with the Validator. (DONE)
+- Add support for custom validators that can be registered with the Validator.
 */

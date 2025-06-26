@@ -21,7 +21,7 @@ var (
 type SourceParser interface {
 	// Parse extracts the information from the implementation and populates
 	// v using the execution chain system.
-	Parse(data any, v Validatable) error
+	Parse(source any, dest any) error
 	// GetSourceType returns the reflect.Type of the source this parser works with
 	GetSourceType() reflect.Type
 	// GetParserName returns a unique identifier for this parser within its source type
@@ -32,9 +32,9 @@ type SourceParser interface {
 // OneshotSourceParser
 ///////////////////////////////////////////////////////////////////////////////
 
-// OneShotSourceParser defines the interface for extracting information
+// SingleBindingParser defines the interface for extracting information
 // from the implementation of this interface and filling a Validatable
-// type with it. A OneShotSourceParser is defined for each Type that you wish
+// type with it. A SingleBindingParser is defined for each Type that you wish
 // to parse.
 //
 // Use this interface when you know that the each field in your struct
@@ -47,14 +47,14 @@ type SourceParser interface {
 // source.
 //
 // For example, json unmarshalling a struct via `json:"fieldname"` will always
-// source from the JSON body, so you can use a OneShotSourceParser for that.
+// source from the JSON body, so you can use a SingleBindingParser for that.
 //
 // # The following are implemented by default:
 //   - JsonSourceParser: Parses from []byte containing JSON data using the
 //     `json` tag.
 //   - StringMapSourceParser: Parses from a map[string]string source using the
 //     `mapvalue` tag.
-type OneShotSourceParser interface {
+type SingleBindingParser[Source any] interface {
 	SourceParser
 }
 
@@ -62,10 +62,18 @@ type OneShotSourceParser interface {
 // MultipleSourceParser
 ///////////////////////////////////////////////////////////////////////////////
 
-// MultipleSourceParser defines the interface for extracting information
-// from the implementation of this interface and filling a Validatable
-// type with it. A MultipleSourceParser is defined for each Type that you wish
-// to parse.
+// MultiBindingParser is an interface that defines the following strategy
+// for parsing:
+//  1. Multiple Binding Parsers are used on source types that can have multiple
+//     ways to bind a single field in a struct based on the source type.
+//  2. They build a ParseChain that allows for multiple bindings on a single field
+//  3. The ParseChain is built based on the tags defined on the struct fields
+//     and the source type.
+//  4. The ParseChain is executed field by field, (recursively if needed),
+//     attempting bindings in the order they are defined in the tags.
+//  5. Each binding may come with its own set of modifiers, allowing tolerant
+//     error/failure handling if one binding fails, and falling back to the
+//     next binding in the chain.
 //
 // Use this interface when any field in your struct could possibly source
 // from multiple places in your source type.
@@ -80,82 +88,140 @@ type OneShotSourceParser interface {
 // # The following are implemented by default:
 //   - HTTPRequestParser: Parses from an *http.Request using the
 //     `json`, `cookie`, `header`, and `query` tags.
-type MultipleSourceParser interface {
+type MultiBindingParser[Source any] interface {
 	SourceParser
 
-	GetParseChain(destType reflect.Type) (*ExecutionChain, error)
-	BuildParseChain(destType reflect.Type) (*ExecutionChain, error)
+	GetParseChain(destType reflect.Type) (*ParseChain[Source], error)
+	BuildParseChain(destType reflect.Type) (*ParseChain[Source], error)
 }
 
-// BaseMultipleSourceParser is a base implementation of MultipleSourceParser
-// that provides common functionality for building and executing parse chains./
+// MultiBindingParserTemplate is a mostly implemented template for a
+// MultiBindingParser implementation.
 //
-// It is used to create a MultipleSourceParser that can handle fields
+// This struct provides common functionality for building and
+// executing parse chains, parsing field tags into
+// a ParseChain that can be executed, and implementing the
+// majority of the SourceParser interface.
+//
+// It is used to create a MultiBindingParser that can handle fields
 // with multiple sources, such as HTTP requests, where fields can be sourced
 // from cookies, headers, query parameters, and the body.
 //
-// Use this struct by embedding it in your own MultipleSourceParser implementation
-// and providing the necessary methods for parsing field sources and retrieving
-// values from those sources.
+// Use this struct by embedding it in your own MultiBindingParser
+// implementation, and then implement the required methods
+// to satisfy the SourceParser and MultiBindingParser interfaces.
+//  1. GetParserName() string
+//  2. handler BindingHandler[S]
+//     - This is the function that will actually retrieve the value
+//     of a field from the source using the given binding.
 //
-// In order to satisfy SourceParser, you must implement:
-//   - Parse(data any, v Validatable) error
-//   - GetSourceType() reflect.Type
-//   - GetParserName() string
-//
-// Example Implementation:
-//
-//	type HTTPRequestParser struct {
-//	  BaseMultipleSourceParser
-//	}
-//
-//	func NewHTTPRequestParser() *HTTPRequestParser {
-//	    hp := &HTTPRequestParser{}
-//	    hp.BaseMultipleSourceParser = NewBaseMultipleSourceParser(
-//		    hp.parseFieldSources,
-//		    hp.getValueFromSource,
-//	    )
-//	 return hp
-//	}
-//
-//	func (hp *HTTPRequestParser) Parse(source any, dest Validatable) error {
-//	 request, ok := source.(*http.Request)
-//	 if !ok {
-//	     return fmt.Errorf("expected *http.Request, got %T", source)
-//	 }
-//
-//	// Get the struct type
-//	destType := reflect.TypeOf(dest)
-//	if destType.Kind() == reflect.Ptr {
-//	    destType = destType.Elem()
-//	}
-//
-//	// Get or build the execution chain
-//	chain, err := hp.GetParseChain(destType)
-//	if err != nil {
-//	    return err
-//	}
-//	// Create HTTP request data wrapper
-//	requestData := &HTTPRequestData{request: request}
-//
-//	// Execute the chain with our HTTP-specific source getter
-//	return chain.Execute(requestData, dest)
-//	}
-//
-//	// Not Shown: FieldSourceParser and ValueGetter implementations
-type BaseMultipleSourceParser[S any] struct {
-	ParseChainBuilder[S]
+// The template optionally supports caching of expensive operations per source
+// instance using the provided BindingCache. This is useful for parsers
+// that rely on external binding implementation that may be expensive to call
+// multiple times for the same source instance.
+type MultiBindingParserTemplate[Source any, Cached any] struct {
+	ParseChainBuilder[Source]
+	bindingCache *BindingCache[Source, Cached]
+	useCache     bool
 }
 
-type BaseMultipleSourceParserOpts struct {
+type MultiBindingParserTemplateOpts struct {
 	BindingOpts
+	// EnableCaching enables per-source-instance caching of expensive operations
+	EnableCaching bool
 }
 
-func NewBaseMultipleSourceParser[S any](handler BindingHandler[S], opts BaseMultipleSourceParserOpts) BaseMultipleSourceParser[S] {
-	return BaseMultipleSourceParser[S]{
-		ParseChainBuilder: NewParseChainBuilder(
-			handler,
-			ParseChainBuilderOpts{BindingOpts: opts.BindingOpts},
+func NewMultiBindingParserTemplate[Source any, Cached any](
+	handler BindingHandler[Source],
+	opts MultiBindingParserTemplateOpts,
+) *MultiBindingParserTemplate[Source, Cached] {
+
+	if handler == nil {
+		return nil
+	}
+
+	template := &MultiBindingParserTemplate[Source, Cached]{
+		ParseChainBuilder: NewParseChainBuilder(handler,
+			ParseChainBuilderOpts{
+				BindingOpts: opts.BindingOpts,
+			},
 		),
+		useCache: opts.EnableCaching,
+	}
+
+	if opts.EnableCaching {
+		template.bindingCache = NewBindingCache[Source, Cached]()
+	}
+
+	return template
+}
+
+// NewMultiBindingParserTemplateWithoutCache creates a MultiBindingParserTemplate without caching support.
+// This is a convenience function for parsers that don't need expensive operation caching.
+func NewMultiBindingParserTemplateWithoutCache[Source any](
+	handler BindingHandler[Source],
+	opts MultiBindingParserTemplateOpts,
+) *MultiBindingParserTemplate[Source, struct{}] {
+	opts.EnableCaching = false
+	return NewMultiBindingParserTemplate[Source, struct{}](handler, opts)
+}
+
+// GetSourceType returns the reflect.Type of the source this parser works with.
+func (p *MultiBindingParserTemplate[Source, Cached]) GetSourceType() reflect.Type {
+	return reflect.TypeOf(*new(Source))
+}
+
+// Parse executes the parse chain for the given source and populates the destination struct.
+// It uses Type Erasure to allow any type of source to be passed in,
+// as long as it matches the expected type S defined in the MultiBindingParserTemplate.
+//
+// This method is the entry point for parsing. It is not recommended to override this method
+// in implementations, as parse chains are meant to be agnostic to the source type,
+// except for the BindingHandler[Source] that is provided during construction.
+func (p *MultiBindingParserTemplate[Source, Cached]) Parse(source any, dest any) error {
+	return TypeErasureParseWrapper(p.parse)(source, dest)
+}
+
+// parse is the internal method that performs the actual parsing.
+// It is separated from the Parse method to allow for type erasure
+// so that SourceParser interface is satisfied.
+func (p *MultiBindingParserTemplate[Source, Cached]) parse(source Source, dest any) error {
+	destType := reflect.TypeOf(dest)
+	chain, err := p.ParseChainBuilder.GetParseChain(destType)
+	if err != nil {
+		return err
+	}
+
+	// Execute the parse chain and clean up cache afterwards if caching is enabled
+	if p.useCache && p.bindingCache != nil {
+		defer p.bindingCache.Delete(&source)
+	}
+
+	return chain.Execute(source, dest)
+}
+
+// GetBindingCache returns the binding cache for use by concrete parser implementations.
+// Returns nil if caching is not enabled.
+func (p *MultiBindingParserTemplate[Source, Cached]) GetBindingCache() *BindingCache[Source, Cached] {
+	return p.bindingCache
+}
+
+func TypeErasureParseWrapper[Source any, Dest any](f func(source Source, dest Dest) error) func(source any, dest any) error {
+	return func(source any, dest any) error {
+		typedSource, ok := source.(Source)
+		if !ok {
+			return fmt.Errorf("expected source type %T, got %T", *new(Source), source)
+		}
+		typedDest, ok := dest.(Dest)
+		if !ok {
+			return fmt.Errorf("expected dest type %T, got %T", *new(Dest), dest)
+		}
+
+		if (reflect.TypeOf(typedDest).Kind() != reflect.Ptr) ||
+			(reflect.TypeOf(typedDest).Elem().Kind() != reflect.Struct) {
+			return fmt.Errorf("destination must be a pointer to a struct, got %T", dest)
+		}
+
+		return f(typedSource, typedDest)
 	}
 }

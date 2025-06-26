@@ -10,9 +10,9 @@ import (
 // Core Execution Chain Types
 ///////////////////////////////////////////////////////////////////////////////
 
-type ExecutionChain interface {
-	Execute(v Validatable) error
-}
+// type ExecutionChain[S any] interface {
+// 	Execute(source S, dest any) error
+// }
 
 type FieldBindingModifiers struct {
 	Required  bool            // If true, this is the final source to try
@@ -47,16 +47,17 @@ type BindingOpts struct {
 // Returns: (value, found, error)
 type BindingHandler[S any] func(source S, binding FieldBinding) (any, bool, error)
 
+// ParseChainBuilder is responsible for building and caching parse chains for a single
+// source type (e.g. http.Request, map[string]any, etc.).
+//
+// It is en
 type ParseChainBuilder[S any] struct {
 	// Cache for execution Cache
 	Cache map[reflect.Type]*ParseChain[S]
 	// Mutex for thread-safe access to chains
 	CacheMutex sync.RWMutex
-
-	opts ParseChainBuilderOpts
-	// using the provided FieldSource. It is used by the execution chain
-	// to populate the current field.
-	handler BindingHandler[S]
+	Opts       ParseChainBuilderOpts
+	Handler    BindingHandler[S]
 }
 
 type ParseChainBuilderOpts struct {
@@ -70,8 +71,8 @@ func NewParseChainBuilder[S any](
 	return ParseChainBuilder[S]{
 		Cache:      make(map[reflect.Type]*ParseChain[S]),
 		CacheMutex: sync.RWMutex{},
-		opts:       opts,
-		handler:    handler,
+		Opts:       opts,
+		Handler:    handler,
 	}
 }
 
@@ -129,7 +130,7 @@ func (builder *ParseChainBuilder[S]) BuildParseChain(t reflect.Type) (*ParseChai
 			bindings = []FieldBinding{}
 		} else {
 			// For non-struct fields, parse sources as before
-			bindings, defaultValue, err = GetBindings(field, ParseTagOpts{builder.opts.BindingOpts})
+			bindings, defaultValue, err = GetBindings(field, ParseTagOpts{builder.Opts.BindingOpts})
 			if err != nil {
 				return nil, fmt.Errorf("failed to parse tag for field %s: %w", field.Name, err)
 			}
@@ -159,7 +160,7 @@ func (builder *ParseChainBuilder[S]) BuildParseChain(t reflect.Type) (*ParseChai
 	chain := &ParseChain[S]{
 		StructType: t,
 		Head:       head,
-		Handler:    builder.handler,
+		Handler:    builder.Handler,
 	}
 
 	// Cache the chain
@@ -209,10 +210,10 @@ type ParseStep[S any] struct {
 }
 
 // Execute runs the entire parse chain using the provided source getter
-func (chain *ParseChain[S]) Execute(sourceData S, dest Validatable) error {
+func (chain *ParseChain[S]) Execute(source S, dest any) error {
 	current := chain.Head
 	for current != nil {
-		if err := chain.executeStep(sourceData, dest, current); err != nil {
+		if err := chain.executeStep(source, dest, current); err != nil {
 			return fmt.Errorf("failed to parse field %s: %w", current.FieldName, err)
 		}
 		current = current.Next
@@ -232,7 +233,7 @@ func (e *executeStepError) Error() string {
 }
 
 // executeStep executes a single parse step
-func (chain *ParseChain[S]) executeStep(sourceData S, dest Validatable, step *ParseStep[S]) error {
+func (chain *ParseChain[S]) executeStep(sourceData S, dest any, step *ParseStep[S]) error {
 	destValue := reflect.ValueOf(dest)
 	if destValue.Kind() == reflect.Ptr {
 		destValue = destValue.Elem()
@@ -294,21 +295,21 @@ func (chain *ParseChain[S]) executeRegularStep(sourceData S, field reflect.Value
 	allOmitNil := true
 	var errors = &executeStepError{errors: []error{}}
 
-	for _, source := range step.Bindings {
-		allOmitEmpty = allOmitEmpty && source.Modifiers.OmitEmpty
-		allOmitError = allOmitError && source.Modifiers.OmitError
-		allOmitNil = allOmitNil && source.Modifiers.OmitNil
+	for _, binding := range step.Bindings {
+		allOmitEmpty = allOmitEmpty && binding.Modifiers.OmitEmpty
+		allOmitError = allOmitError && binding.Modifiers.OmitError
+		allOmitNil = allOmitNil && binding.Modifiers.OmitNil
 
-		value, found, err := chain.Handler(sourceData, source)
+		value, found, err := chain.Handler(sourceData, binding)
 		if err != nil {
 
 			// Handle Omit Error Modifier
-			if source.Modifiers.OmitError {
+			if binding.Modifiers.OmitError {
 				continue
 			}
 
-			errors.errors = append(errors.errors, fmt.Errorf("error getting value from source %s: %w", source.Name, err))
-			if source.Modifiers.Required {
+			errors.errors = append(errors.errors, fmt.Errorf("error getting value from source %s: %w", binding.Name, err))
+			if binding.Modifiers.Required {
 				return errors
 			}
 			continue
@@ -318,13 +319,13 @@ func (chain *ParseChain[S]) executeRegularStep(sourceData S, field reflect.Value
 			if value != nil {
 				return setFieldValue(field, fmt.Sprintf("%v", value))
 			}
-			if source.Modifiers.OmitNil {
+			if binding.Modifiers.OmitNil {
 				continue // Skip nil values if OmitNil is set
 			}
 		}
 
-		if source.Modifiers.Required {
-			return fmt.Errorf("required field %s not found in source %s", source.Identifier, source.Name)
+		if binding.Modifiers.Required {
+			return fmt.Errorf("required field %s not found in source %s", binding.Identifier, binding.Name)
 		}
 	}
 

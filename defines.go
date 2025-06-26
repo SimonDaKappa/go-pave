@@ -57,15 +57,5 @@ var (
 )
 
 func init() {
-	// Ensure the reflect types are registered and available
+
 }
-
-// Comptime checks to ensure parsers implement the correct interfaces
-//
-//nolint:staticcheck
-var (
-	// _comptimeCheckHTTPRequestParserIsMultipleSourceParser MultipleSourceParser = NewHTTPRequestParser()
-
-	_comptimeCheckJSONParserIsOneShotSourceParser       OneShotSourceParser = NewJsonByteSliceSourceParser()
-	_compTimeCheckJSONStringParserIsOneShotSourceParser OneShotSourceParser = NewJSONStringSourceParser()
-)

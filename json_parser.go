@@ -21,17 +21,16 @@ func (jsp *JSONByteSliceSourceParser) GetParserName() string {
 	return JSONByteSliceParserName
 }
 
-func (jsp *JSONByteSliceSourceParser) Parse(source any, dest Validatable) error {
+func (jsp *JSONByteSliceSourceParser) Parse(source any, dest any) error {
+	return TypeErasureParseWrapper(jsp.parse)(source, dest)
+}
+
+func (jsp *JSONByteSliceSourceParser) parse(source []byte, dest any) error {
 	if reflect.TypeOf(dest).Kind() != reflect.Ptr {
 		return fmt.Errorf("destination must be a pointer to a struct, got %T", dest)
 	}
 
-	data, ok := source.([]byte)
-	if !ok {
-		return fmt.Errorf("expected []byte, got %T", source)
-	}
-
-	if err := json.Unmarshal(data, dest); err != nil {
+	if err := json.Unmarshal(source, dest); err != nil {
 		return fmt.Errorf("error unmarshaling JSON data: %w", err)
 	}
 	return nil
@@ -50,17 +49,16 @@ func (jsp *JSONStringSourceParser) GetParserName() string {
 	return JSONStringParserName
 }
 
-func (jsp *JSONStringSourceParser) Parse(source any, dest Validatable) error {
+func (jsp *JSONStringSourceParser) Parse(source any, dest any) error {
+	return TypeErasureParseWrapper(jsp.parse)(source, dest)
+}
+
+func (jsp *JSONStringSourceParser) parse(source string, dest any) error {
 	if reflect.TypeOf(dest).Kind() != reflect.Ptr {
 		return fmt.Errorf("destination must be a pointer to a struct, got %T", dest)
 	}
 
-	data, ok := source.(string)
-	if !ok {
-		return fmt.Errorf("expected string, got %T", source)
-	}
-
-	if err := json.Unmarshal([]byte(data), dest); err != nil {
+	if err := json.Unmarshal([]byte(source), dest); err != nil {
 		return fmt.Errorf("error unmarshaling JSON data: %w", err)
 	}
 	return nil
