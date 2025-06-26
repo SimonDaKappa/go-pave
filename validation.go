@@ -33,12 +33,6 @@ var (
 	ErrInvalidParseExecutionChainType = errors.New("improper type passed for this parse execution chain")
 )
 
-const (
-	ContentEncodingUTF8        string = "UTF-8"
-	ContentTypeApplicationJSON string = "application/json"
-	ContentTypeDelimeter              = ";"
-)
-
 ///////////////////////////////////////////////////////////////////////////////
 // Validator Impl.
 ///////////////////////////////////////////////////////////////////////////////
@@ -81,11 +75,7 @@ type ValidatorContext struct {
 }
 
 var (
-	_defaultSourceParsers = []SourceParser{
-		NewHTTPRequestParser(),
-		NewJsonSourceParser(),
-		NewStringMapSourceParser(),
-	}
+	_defaultSourceParsers []SourceParser = nil
 )
 
 type ValidatorOpts struct {
@@ -284,6 +274,14 @@ func (v *Validator) Invalidate(dest Validatable) error {
 var _globalValidator *Validator = nil
 
 func init() {
+	_defaultSourceParsers = []SourceParser{
+		NewJsonByteSliceSourceParser(),
+		NewJSONStringSourceParser(),
+		// NewHTTPRequestParser(),
+		// NewStringMapSourceParser(),
+		// NewStringAnyMapSourceParser(),
+	}
+
 	var err error
 	_globalValidator, err = NewValidator(ValidatorOpts{IncludeDefaults: true})
 	if err != nil {

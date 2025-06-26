@@ -2,6 +2,7 @@ package pave
 
 import (
 	"errors"
+	"fmt"
 	"reflect"
 )
 
@@ -14,7 +15,7 @@ var (
 )
 
 ///////////////////////////////////////////////////////////////////////////////
-// Interfaces
+// SourceParser Interface
 ///////////////////////////////////////////////////////////////////////////////
 
 type SourceParser interface {
@@ -27,16 +28,13 @@ type SourceParser interface {
 	GetParserName() string
 }
 
-type ChainExecutor interface {
-	// BuildParseChain builds and caches an execution chain for the given type
-	BuildParseChain(t reflect.Type) (*ParseExecutionChain, error)
-	// GetParseChain retrieves a cached execution chain or builds one if needed
-	GetParseChain(t reflect.Type) (*ParseExecutionChain, error)
-}
+///////////////////////////////////////////////////////////////////////////////
+// OneshotSourceParser
+///////////////////////////////////////////////////////////////////////////////
 
-// OneshotSourceParser defines the interface for extracting information
+// OneShotSourceParser defines the interface for extracting information
 // from the implementation of this interface and filling a Validatable
-// type with it. A OneshotSourceParser is defined for each Type that you wish
+// type with it. A OneShotSourceParser is defined for each Type that you wish
 // to parse.
 //
 // Use this interface when you know that the each field in your struct
@@ -49,16 +47,20 @@ type ChainExecutor interface {
 // source.
 //
 // For example, json unmarshalling a struct via `json:"fieldname"` will always
-// source from the JSON body, so you can use a OneshotSourceParser for that.
+// source from the JSON body, so you can use a OneShotSourceParser for that.
 //
 // # The following are implemented by default:
 //   - JsonSourceParser: Parses from []byte containing JSON data using the
 //     `json` tag.
 //   - StringMapSourceParser: Parses from a map[string]string source using the
 //     `mapvalue` tag.
-type OneshotSourceParser interface {
+type OneShotSourceParser interface {
 	SourceParser
 }
+
+///////////////////////////////////////////////////////////////////////////////
+// MultipleSourceParser
+///////////////////////////////////////////////////////////////////////////////
 
 // MultipleSourceParser defines the interface for extracting information
 // from the implementation of this interface and filling a Validatable
@@ -80,7 +82,9 @@ type OneshotSourceParser interface {
 //     `json`, `cookie`, `header`, and `query` tags.
 type MultipleSourceParser interface {
 	SourceParser
-	ChainExecutor
+
+	GetParseChain(destType reflect.Type) (*ExecutionChain, error)
+	BuildParseChain(destType reflect.Type) (*ExecutionChain, error)
 }
 
 // BaseMultipleSourceParser is a base implementation of MultipleSourceParser
@@ -139,15 +143,19 @@ type MultipleSourceParser interface {
 //	}
 //
 //	// Not Shown: FieldSourceParser and ValueGetter implementations
-type BaseMultipleSourceParser struct {
-	BaseChainExecutor
+type BaseMultipleSourceParser[S any] struct {
+	ParseChainBuilder[S]
 }
 
-func NewBaseMultipleSourceParser(
-	fieldParser FieldSourceParser,
-	valueGetter ValueGetter,
-) BaseMultipleSourceParser {
-	return BaseMultipleSourceParser{
-		BaseChainExecutor: NewBaseChainExecutor(fieldParser, valueGetter),
+type BaseMultipleSourceParserOpts struct {
+	BindingOpts
+}
+
+func NewBaseMultipleSourceParser[S any](handler BindingHandler[S], opts BaseMultipleSourceParserOpts) BaseMultipleSourceParser[S] {
+	return BaseMultipleSourceParser[S]{
+		ParseChainBuilder: NewParseChainBuilder(
+			handler,
+			ParseChainBuilderOpts{BindingOpts: opts.BindingOpts},
+		),
 	}
 }

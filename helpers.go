@@ -14,6 +14,17 @@ import (
 ///////////////////////////////////////////////////////////////////////////////
 
 // Set field value with type conversion
+//
+// Currently supports:
+//   - string to string
+//   - string to int
+//   - string to bool
+//   - string to float64
+//   - string to uuid.UUID
+//   - string to []byte (raw byte slice)
+//   - string to array of uuid.UUID
+//   - string to struct with uuid.UUID field
+//   - string to struct with time.Time field
 func setFieldValue(field reflect.Value, value string) error {
 	switch field.Kind() {
 	case reflect.String:
@@ -76,7 +87,7 @@ func setFieldValue(field reflect.Value, value string) error {
 }
 
 // zeroStructFields recursively sets all fields of a struct to
-// their default vlaues.
+// their default values.
 func zeroStructFields(value reflect.Value) {
 	if value.Kind() != reflect.Struct {
 		return
@@ -92,4 +103,21 @@ func zeroStructFields(value reflect.Value) {
 			field.Set(reflect.Zero(field.Type()))
 		}
 	}
+}
+
+// isSpecialStructType checks if a struct type should be treated as a primitive
+// rather than being recursively parsed. Special types include time.Time, uuid.UUID, etc.
+func isSpecialStructType(t reflect.Type) bool {
+	// List of struct types that should be treated as primitives
+	specialTypes := []reflect.Type{
+		reflect.TypeOf(time.Time{}),
+		reflect.TypeOf(uuid.UUID{}),
+	}
+
+	for _, specialType := range specialTypes {
+		if t == specialType {
+			return true
+		}
+	}
+	return false
 }

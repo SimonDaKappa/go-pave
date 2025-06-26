@@ -14,104 +14,92 @@ type ExecutionChain interface {
 	Execute(v Validatable) error
 }
 
-// FieldSource represents a single source for a field with its configuration
-type FieldSource struct {
-	Source    string // The source type (json, cookie, header, query, etc.)
-	Key       string // The name/key for the source
-	OmitEmpty bool   // If true, continue to next source if not found
-	Required  bool   // If true, this is the final source to try
+type FieldBindingModifiers struct {
+	Required  bool            // If true, this is the final source to try
+	OmitEmpty bool            // If true, skip this source if not found
+	OmitNil   bool            // If true, skip this source if the value is nil
+	OmitError bool            // If true, skip this source if an error occurs
+	Custom    map[string]bool // Custom modifiers for parser-specific behavior
 }
 
-// ParseStep represents a single step in the execution chain
-type ParseStep struct {
-	FieldIndex int           // Index of the field in the struct
-	FieldName  string        // Name of the field for error reporting
-	Sources    []FieldSource // Ordered list of sources to try
-	Next       *ParseStep    // Next step in the chain
+// FieldBinding represents a complete view of a single possible value
+// binding for a field. Multipl FieldBinding's are usually defined per field.
+type FieldBinding struct {
+	Name       string                // The name of the interaction method with the source type
+	Identifier string                // The identifier of this specific field on the interaction method
+	Modifiers  FieldBindingModifiers // Additional modifiers for the source
+}
+
+type BindingOpts struct {
+	AllowedBindingNames     []string
+	AllowedBindingModifiers []string
 }
 
 ///////////////////////////////////////////////////////////////////////////////
 // ChainExecutor
 ///////////////////////////////////////////////////////////////////////////////
 
-// FieldSourceParser is a function that creates the list of FieldSource's
-// that a particular field can get from depending on its tags.
-type FieldSourceParser func(field reflect.StructField) []FieldSource
-
-// ValueGetter is a function that retrieves a value from a specific source
+// BindingHandler is a function that retrieves a value from source that is
+// identified by the provided FieldBinding. It is used by
+// The Parser -> The Parse Chain Builder -> The Parse Chain
+// to retrieve values from the source type.
+//
 // Returns: (value, found, error)
-type ValueGetter func(sourceData any, source FieldSource) (any, bool, error)
+type BindingHandler[S any] func(source S, binding FieldBinding) (any, bool, error)
 
-// BaseChainExecutor provides functions to create parse execution chain,
-// cache them, and run them later.
-//
-// It takes two functions that describe how the chain is created and
-// how it runs:
-//
-//	# fieldParser (FieldSourceParser)
-//
-// Used by the executor to traverse
-// the fields of a struct, parse the tags for that field, and create
-// the []FieldSource for that field.
-//
-//	# valueGetter (ValueGetter)
-//
-// Used by the executor to retrieve values from the available FieldSource's
-// for the current step in the execution chain.
-type BaseChainExecutor struct {
-	// Cache for execution chains
-	chains map[reflect.Type]*ParseExecutionChain
+type ParseChainBuilder[S any] struct {
+	// Cache for execution Cache
+	Cache map[reflect.Type]*ParseChain[S]
 	// Mutex for thread-safe access to chains
-	chainMutex sync.RWMutex
+	CacheMutex sync.RWMutex
 
-	// fieldParser is a function that parses the sources from a struct field
-	// to determine where to extract data from. It is used for building the
-	// execution chain.
-	fieldParser FieldSourceParser
-
-	// valueGetter extracts values from the source data
+	opts ParseChainBuilderOpts
 	// using the provided FieldSource. It is used by the execution chain
 	// to populate the current field.
-	valueGetter ValueGetter
+	handler BindingHandler[S]
 }
 
-func NewBaseChainExecutor(
-	fieldParser FieldSourceParser,
-	valueGetter ValueGetter,
-) BaseChainExecutor {
-	return BaseChainExecutor{
-		chains:      make(map[reflect.Type]*ParseExecutionChain),
-		chainMutex:  sync.RWMutex{},
-		fieldParser: fieldParser,
-		valueGetter: valueGetter,
+type ParseChainBuilderOpts struct {
+	BindingOpts
+}
+
+func NewParseChainBuilder[S any](
+	handler BindingHandler[S],
+	opts ParseChainBuilderOpts,
+) ParseChainBuilder[S] {
+	return ParseChainBuilder[S]{
+		Cache:      make(map[reflect.Type]*ParseChain[S]),
+		CacheMutex: sync.RWMutex{},
+		opts:       opts,
+		handler:    handler,
 	}
 }
 
-func (p *BaseChainExecutor) GetParseChain(t reflect.Type) (*ParseExecutionChain, error) {
-	p.chainMutex.RLock()
-	chain, exists := p.chains[t]
-	p.chainMutex.RUnlock()
+func (builder *ParseChainBuilder[S]) GetParseChain(t reflect.Type) (*ParseChain[S], error) {
+	builder.CacheMutex.RLock()
+	chain, exists := builder.Cache[t]
+	builder.CacheMutex.RUnlock()
 
 	if exists {
 		return chain, nil
 	}
 
 	// If not cached, build the chain
-	chain, err := p.BuildParseChain(t)
+	chain, err := builder.BuildParseChain(t)
 	if err != nil {
 		return nil, err
 	}
 
 	// Cache the built chain
-	p.chainMutex.Lock()
-	p.chains[t] = chain
-	p.chainMutex.Unlock()
+	builder.CacheMutex.Lock()
+	builder.Cache[t] = chain
+	builder.CacheMutex.Unlock()
 
 	return chain, nil
 }
 
-func (p *BaseChainExecutor) BuildParseChain(t reflect.Type) (*ParseExecutionChain, error) {
-	var head, current *ParseStep
+func (builder *ParseChainBuilder[S]) BuildParseChain(t reflect.Type) (*ParseChain[S], error) {
+	var head, current *ParseStep[S]
 
 	// Parse fields to build the execution chain
 	for i := 0; i < t.NumField(); i++ {
@@ -122,15 +110,41 @@ func (p *BaseChainExecutor) BuildParseChain(t reflect.Type) (*ParseExecutionChai
 			continue
 		}
 
-		sources := p.fieldParser(field)
-		if len(sources) == 0 {
-			continue // Skip fields with no sources
+		// Check if field is a struct (excluding special types like time.Time, uuid.UUID)
+		isStruct := field.Type.Kind() == reflect.Struct &&
+			!isSpecialStructType(field.Type)
+
+		var subChain *ParseChain[S]
+		var bindings []FieldBinding
+		var defaultValue string
+		var err error
+
+		if isStruct {
+			// For struct fields, build a sub-chain recursively
+			subChain, err = builder.BuildParseChain(field.Type)
+			if err != nil {
+				return nil, fmt.Errorf("failed to build sub-chain for field %s: %w", field.Name, err)
+			}
+			// Struct fields don't need bindings since they use sub-chains
+			bindings = []FieldBinding{}
+		} else {
+			// For non-struct fields, parse sources as before
+			bindings, defaultValue, err = GetBindings(field, ParseTagOpts{builder.opts.BindingOpts})
+			if err != nil {
+				return nil, fmt.Errorf("failed to parse tag for field %s: %w", field.Name, err)
+			}
+			if len(bindings) == 0 {
+				continue // Skip fields with no bindings
+			}
 		}
 
-		step := &ParseStep{
-			FieldIndex: i,
-			FieldName:  field.Name,
-			Sources:    sources,
+		step := &ParseStep[S]{
+			FieldIndex:   i,
+			FieldName:    field.Name,
+			Bindings:     bindings,
+			DefaultValue: defaultValue,
+			IsStruct:     isStruct,
+			SubChain:     subChain,
 		}
 
 		if head == nil {
@@ -142,41 +156,63 @@ func (p *BaseChainExecutor) BuildParseChain(t reflect.Type) (*ParseExecutionChai
 		}
 	}
 
-	chain := &ParseExecutionChain{
-		StructType:   t,
-		Head:         head,
-		SourceGetter: p.valueGetter,
+	chain := &ParseChain[S]{
+		StructType: t,
+		Head:       head,
+		Handler:    builder.handler,
 	}
 
 	// Cache the chain
-	p.chainMutex.Lock()
-	p.chains[t] = chain
-	p.chainMutex.Unlock()
+	builder.CacheMutex.Lock()
+	builder.Cache[t] = chain
+	builder.CacheMutex.Unlock()
 
 	return chain, nil
 }
 
 ///////////////////////////////////////////////////////////////////////////////
-// BaseExecutionChain
+// Parse Chain
 ///////////////////////////////////////////////////////////////////////////////
 
-// ParseExecutionChain represents a linked list of parse steps for a struct type
+// ParseChain (Parse-Execution Chain) represents a linked list of parse steps for a struct type
 //
 // Uses a function-based approach for source value retrieval, eliminating
 // the need for each parser to reimplement the same linked list traversal logic.
 // The SourceGetter function provides dynamic dispatch to the appropriate
 // value retrieval method for each parser type.
-type ParseExecutionChain struct {
-	StructType   reflect.Type
-	Head         *ParseStep
-	SourceGetter ValueGetter // Function to get values from sources
+//
+// # It takes one generic type S
+//
+// S is the Go Type that data will be sourced from (e.g http.Request)
+type ParseChain[S any] struct {
+	StructType reflect.Type
+	Head       *ParseStep[S]
+	Handler    BindingHandler[S] // Function to get values from sources
+}
+
+// ParseStep represents a single step in the execution chain
+type ParseStep[S any] struct {
+	// Next is the next step in the current chain.
+	Next *ParseStep[S]
+	// if this field is a struct that needs recursive parsing
+	IsStruct bool
+	// Sub-chain for recursive struct parsing
+	SubChain *ParseChain[S]
+	// Index of the field in the struct
+	FieldIndex int
+	// Name of the field for error reporting
+	FieldName string
+	// Default value for the field if bindings fail and not required to succeed
+	DefaultValue string
+	// Ordered list of bindings to try
+	Bindings []FieldBinding
 }
 
 // Execute runs the entire parse chain using the provided source getter
-func (bec *ParseExecutionChain) Execute(sourceData any, dest Validatable) error {
-	current := bec.Head
+func (chain *ParseChain[S]) Execute(sourceData S, dest Validatable) error {
+	current := chain.Head
 	for current != nil {
-		if err := bec.executeStep(sourceData, dest, current); err != nil {
+		if err := chain.executeStep(sourceData, dest, current); err != nil {
 			return fmt.Errorf("failed to parse field %s: %w", current.FieldName, err)
 		}
 		current = current.Next
@@ -196,7 +232,7 @@ func (e *executeStepError) Error() string {
 }
 
 // executeStep executes a single parse step
-func (bec *ParseExecutionChain) executeStep(sourceData any, dest Validatable, step *ParseStep) error {
+func (chain *ParseChain[S]) executeStep(sourceData S, dest Validatable, step *ParseStep[S]) error {
 	destValue := reflect.ValueOf(dest)
 	if destValue.Kind() == reflect.Ptr {
 		destValue = destValue.Elem()
@@ -207,34 +243,98 @@ func (bec *ParseExecutionChain) executeStep(sourceData any, dest Validatable, st
 		return nil // Skip non-settable fields
 	}
 
+	// Handle struct fields with recursive parsing
+	if step.IsStruct {
+		return chain.executeRecursiveStep(sourceData, field, step)
+	}
+
+	// Handle regular fields with source parsing
+	return chain.executeRegularStep(sourceData, field, step)
+}
+
+// executeRecursiveStep handles recursive parsing of struct fields
+func (chain *ParseChain[S]) executeRecursiveStep(sourceData S, field reflect.Value, step *ParseStep[S]) error {
+	if step.SubChain == nil {
+		return fmt.Errorf("no sub-chain available for struct field %s", step.FieldName)
+	}
+
+	// Create a new instance of the struct type if the field is nil or zero
+	if field.Kind() == reflect.Ptr {
+		if field.IsNil() {
+			// Create new instance for pointer field
+			newValue := reflect.New(field.Type().Elem())
+			field.Set(newValue)
+		}
+		// For pointer fields, we need to ensure the pointed-to value implements Validatable
+		if validatable, ok := field.Interface().(Validatable); ok {
+			return step.SubChain.Execute(sourceData, validatable)
+		} else {
+			return fmt.Errorf("struct field %s does not implement Validatable interface", step.FieldName)
+		}
+	} else {
+		// For non-pointer struct fields, we need to get the address to implement Validatable
+		if field.CanAddr() {
+			fieldAddr := field.Addr()
+			if validatable, ok := fieldAddr.Interface().(Validatable); ok {
+				return step.SubChain.Execute(sourceData, validatable)
+			} else {
+				return fmt.Errorf("struct field %s does not implement Validatable interface", step.FieldName)
+			}
+		} else {
+			return fmt.Errorf("cannot get address of struct field %s for recursive parsing", step.FieldName)
+		}
+	}
+}
+
+// executeRegularStep handles parsing of regular (non-struct) fields
+func (chain *ParseChain[S]) executeRegularStep(sourceData S, field reflect.Value, step *ParseStep[S]) error {
 	// Try each source in order
 	allOmitEmpty := true
+	allOmitError := true
+	allOmitNil := true
 	var errors = &executeStepError{errors: []error{}}
 
-	for _, source := range step.Sources {
-		allOmitEmpty = allOmitEmpty && source.OmitEmpty
+	for _, source := range step.Bindings {
+		allOmitEmpty = allOmitEmpty && source.Modifiers.OmitEmpty
+		allOmitError = allOmitError && source.Modifiers.OmitError
+		allOmitNil = allOmitNil && source.Modifiers.OmitNil
 
-		value, found, err := bec.SourceGetter(sourceData, source)
+		value, found, err := chain.Handler(sourceData, source)
 		if err != nil {
-			errors.errors = append(errors.errors, fmt.Errorf("error getting value from source %s: %w", source.Source, err))
-			if source.Required {
+
+			// Handle Omit Error Modifier
+			if source.Modifiers.OmitError {
+				continue
+			}
+
+			errors.errors = append(errors.errors, fmt.Errorf("error getting value from source %s: %w", source.Name, err))
+			if source.Modifiers.Required {
 				return errors
 			}
 			continue
 		}
 
 		if found {
-			return setFieldValue(field, fmt.Sprintf("%v", value))
+			if value != nil {
+				return setFieldValue(field, fmt.Sprintf("%v", value))
+			}
+			if source.Modifiers.OmitNil {
+				continue // Skip nil values if OmitNil is set
+			}
 		}
 
-		if source.Required {
-			return fmt.Errorf("required field %s not found in source %s", source.Key, source.Source)
+		if source.Modifiers.Required {
+			return fmt.Errorf("required field %s not found in source %s", source.Identifier, source.Name)
 		}
 	}
 
-	// If all sources have omitempty and none succeeded, that's ok
-	if allOmitEmpty {
-		return nil
+	// If all sources have failed/have no data, and default value given, thats ok
+	if allOmitEmpty || allOmitError || allOmitNil {
+		if step.DefaultValue != "" {
+			return setFieldValue(field, step.DefaultValue)
+		} else {
+			errors.errors = append(errors.errors, fmt.Errorf("all sources failed for field %v and no default value provided", field))
+		}
 	}
 
 	return errors
