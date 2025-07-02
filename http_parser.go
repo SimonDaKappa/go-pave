@@ -1,6 +1,7 @@
 package pave
 
 import (
+	"bytes"
 	"fmt"
 	"io"
 	"net/http"
@@ -9,106 +10,142 @@ import (
 	"github.com/tidwall/gjson"
 )
 
-// HTTPRequestParser implements MultipleSourceParser for HTTP requests
+var (
+	// Default HTTPRequestParser Binding Options
+	_httpBindingOpts = BindingOpts{
+		AllowedBindingNames: []string{
+			JsonTagBinding,
+			CookieTagBinding,
+			HeaderTagBinding,
+			QueryTagBinding,
+		},
+		CustomBindingModifiers: []string{},
+	}
+
+	// Default HTTPRequestParser ParseChainManager Options
+	_httpPCMOpts = ParseChainManagerOpts{
+		BindingOpts: _httpBindingOpts,
+	}
+
+	// Default HTTPRequestParser Options
+	_httpParserOpts = BaseMBParserOpts{
+		UseCache: true,
+		PCMOpts:  _httpPCMOpts,
+	}
+)
+
+// HTTPRequestParser provides a parser for HTTP requests with the
+// the following features:
+//   - Parses JSON body, cookies, headers, and query parameters
+//   - Caches repetively parsed data by http package to avoid extra
+//     computation and allocs.
+//   - Supports both cached and non-cached parsing
+//   - Implements the MultiBindingParser interface for flexible
+//     field bindings
+//
+// The following Field Bindings are supported:
+//   - `json:<key>`: Parses a JSON key from the request body
+//   - `cookie:<key>`: Parses a cookie value by key
+//   - `header:<key>`: Parses a header value by key
+//   - `query:<key>`: Parses a query parameter value by key
+//
+// Like all other MultiBindingParsers, this parser caches the
+// parsing strategy (ParseChain) for each destination type, so
+// that only the first parse takes the time to build the chain,
+// and subsequent parses simply execute the pre-built chain.
+//
+// This parser expects the standard parse tag format.
+//
+// This parser does not support any custom modifiers, but it does
+// support all standard modifiers (required, omitempty, omitnil, omiterr)
 type HTTPRequestParser struct {
-	*MultiBindingParserTemplate[http.Request, HTTPRequestData]
-}
-
-// HTTPRequestData holds parsed HTTP request data to avoid re-parsing
-type HTTPRequestData struct {
-	// Cached JSON body to avoid repeated parsing
-	jsonBody  gjson.Result
-	bodyOnce  sync.Once
-	bodyError error
-	// Cache query parameters to avoid repeated URL.Query() calls
-	queryParams map[string][]string
-	queryOnce   sync.Once
-
-	headers     map[string]string // Cached headers for quick access
-	headersOnce sync.Once
-
-	cookies     map[string]*http.Cookie // Cached cookies for quick access
-	cookiesOnce sync.Once
+	*BaseMBParser[http.Request, HTTPRequestOnce]
 }
 
 func NewHTTPRequestParser() *HTTPRequestParser {
-	hp := &HTTPRequestParser{}
-	hp.MultiBindingParserTemplate = NewMultiBindingParserTemplate[http.Request, HTTPRequestData](
-		hp.BindingHandler,
-		MultiBindingParserTemplateOpts{
-			BindingOpts: BindingOpts{
-				// Default binding options for HTTP request parsing
-			},
-			EnableCaching: true,
-		},
+	base := NewBaseMBParser[http.Request, HTTPRequestOnce](
+		NewHTTPBindingManager(),
+		_httpParserOpts,
 	)
 
-	return hp
+	return &HTTPRequestParser{
+		BaseMBParser: base,
+	}
 }
 
-func (hp *HTTPRequestParser) GetParserName() string {
+func (hp *HTTPRequestParser) Name() string {
 	return HTTPRequestParserName
 }
 
-func (hp *HTTPRequestParser) BindingHandler(source http.Request, binding FieldBinding) (any, bool, error) {
-	// Get or create cache entry for this request instance
-	cache := hp.GetBindingCache()
-	if cache == nil {
-		// Fallback to no caching if cache is disabled
-		return hp.bindingHandlerNoCache(&source, binding)
-	}
+type HTTPBindingManager struct{}
 
-	cacheEntry := cache.GetOrCreate(&source, func() HTTPRequestData {
-		return HTTPRequestData{} // Initialize empty cache data
-	})
+func NewHTTPBindingManager() *HTTPBindingManager {
+	return &HTTPBindingManager{}
+}
+
+func (mgr *HTTPBindingManager) BindingHandlerCached(
+	source *http.Request,
+	entry *CacheEntry[HTTPRequestOnce],
+	binding Binding,
+) (any, bool, error) {
+
+	if entry == nil {
+		return nil, false, ErrBindingCacheNilEntry
+	}
 
 	switch binding.Name {
 	case JsonTagBinding:
-		return hp.getJSONValue(&source, cacheEntry, binding.Identifier)
+		return mgr.JSONValue(source, entry, binding.Identifier)
 	case CookieTagBinding:
-		return hp.getCookieValue(&source, cacheEntry, binding.Identifier)
+		return mgr.CookieValue(source, entry, binding.Identifier)
 	case HeaderTagBinding:
-		return hp.getHeaderValue(&source, cacheEntry, binding.Identifier)
+		return mgr.HeaderValue(source, entry, binding.Identifier)
 	case QueryTagBinding:
-		return hp.getQueryValue(&source, cacheEntry, binding.Identifier)
+		return mgr.QueryValue(source, entry, binding.Identifier)
 	default:
-		return nil, false, fmt.Errorf("unknown source: %s", binding.Name)
+		return nil, false, fmt.Errorf("unknown binding: %s", binding.Name)
 	}
 }
 
-// bindingHandlerNoCache is a fallback for when caching is disabled
-func (hp *HTTPRequestParser) bindingHandlerNoCache(source *http.Request, binding FieldBinding) (any, bool, error) {
-	// Direct parsing without caching - less efficient but simpler
-	switch binding.Name {
-	case JsonTagBinding:
-		return hp.getJSONValueNoCache(source, binding.Identifier)
-	case CookieTagBinding:
-		return hp.getCookieValueNoCache(source, binding.Identifier)
-	case HeaderTagBinding:
-		return hp.getHeaderValueNoCache(source, binding.Identifier)
-	case QueryTagBinding:
-		return hp.getQueryValueNoCache(source, binding.Identifier)
-	default:
-		return nil, false, fmt.Errorf("unknown source: %s", binding.Name)
-	}
+func (mgr *HTTPBindingManager) BindingHandler(
+	source *http.Request,
+	binding Binding,
+) (any, bool, error) {
+
+	// This should be fine. We onyl allow instances of HTTBindingManager to be
+	// created by the HTTPRequestParser, which always uses the cache.
+	return nil, false, fmt.Errorf("uncached handler not implemented for HTTPBindingManager")
 }
 
-func (hp *HTTPRequestParser) getJSONValue(source *http.Request, cacheEntry *CacheEntry[HTTPRequestData], fieldName string) (any, bool, error) {
+func (hp *HTTPBindingManager) NewCached() HTTPRequestOnce {
+	return NewHTTPRequestOnce()
+}
+
+func (hp *HTTPBindingManager) JSONValue(
+	source *http.Request,
+	entry *CacheEntry[HTTPRequestOnce],
+	key string,
+) (any, bool, error) {
+
 	var jsonBody gjson.Result
 	var err error
 
-	cacheEntry.WriteData(func(data *HTTPRequestData) {
+	entry.WriteData(func(data *HTTPRequestOnce) {
 		data.bodyOnce.Do(func() {
 			if source.Body == nil || source.ContentLength == 0 {
 				data.jsonBody = gjson.Parse("{}")
 				return
 			}
 
+			// Read body and restore it to so others can read it
 			body, readErr := io.ReadAll(source.Body)
 			if readErr != nil {
+				source.Body.Close()
 				data.bodyError = fmt.Errorf("failed to read request body: %w", readErr)
 				return
 			}
+			source.Body.Close()
+			source.Body = io.NopCloser(bytes.NewReader(body))
 
 			if len(body) == 0 {
 				data.jsonBody = gjson.Parse("{}")
@@ -124,7 +161,7 @@ func (hp *HTTPRequestParser) getJSONValue(source *http.Request, cacheEntry *Cach
 		return nil, false, err
 	}
 
-	result := jsonBody.Get(fieldName)
+	result := jsonBody.Get(key)
 	if !result.Exists() {
 		return nil, false, nil
 	}
@@ -132,10 +169,15 @@ func (hp *HTTPRequestParser) getJSONValue(source *http.Request, cacheEntry *Cach
 	return result.Value(), true, nil
 }
 
-func (hp *HTTPRequestParser) getCookieValue(source *http.Request, cacheEntry *CacheEntry[HTTPRequestData], name string) (any, bool, error) {
+func (hp *HTTPBindingManager) CookieValue(
+	source *http.Request,
+	entry *CacheEntry[HTTPRequestOnce],
+	key string,
+) (any, bool, error) {
+
 	var cookies map[string]*http.Cookie
 
-	cacheEntry.WriteData(func(data *HTTPRequestData) {
+	entry.WriteData(func(data *HTTPRequestOnce) {
 		data.cookiesOnce.Do(func() {
 			data.cookies = make(map[string]*http.Cookie)
 			for _, cookie := range source.Cookies() {
@@ -145,7 +187,7 @@ func (hp *HTTPRequestParser) getCookieValue(source *http.Request, cacheEntry *Ca
 		cookies = data.cookies
 	})
 
-	cookie, exists := cookies[name]
+	cookie, exists := cookies[key]
 	if !exists {
 		return nil, false, nil
 	}
@@ -153,10 +195,15 @@ func (hp *HTTPRequestParser) getCookieValue(source *http.Request, cacheEntry *Ca
 	return cookie.Value, true, nil
 }
 
-func (hp *HTTPRequestParser) getHeaderValue(source *http.Request, cacheEntry *CacheEntry[HTTPRequestData], name string) (any, bool, error) {
+func (hp *HTTPBindingManager) HeaderValue(
+	source *http.Request,
+	entry *CacheEntry[HTTPRequestOnce],
+	key string,
+) (any, bool, error) {
+
 	var headers map[string]string
 
-	cacheEntry.WriteData(func(data *HTTPRequestData) {
+	entry.WriteData(func(data *HTTPRequestOnce) {
 		data.headersOnce.Do(func() {
 			data.headers = make(map[string]string)
 			for key, values := range source.Header {
@@ -168,7 +215,7 @@ func (hp *HTTPRequestParser) getHeaderValue(source *http.Request, cacheEntry *Ca
 		headers = data.headers
 	})
 
-	value, exists := headers[name]
+	value, exists := headers[key]
 	if !exists || value == "" {
 		return nil, false, nil
 	}
@@ -176,71 +223,50 @@ func (hp *HTTPRequestParser) getHeaderValue(source *http.Request, cacheEntry *Ca
 	return value, true, nil
 }
 
-func (hp *HTTPRequestParser) getQueryValue(source *http.Request, cacheEntry *CacheEntry[HTTPRequestData], name string) (any, bool, error) {
+func (hp *HTTPBindingManager) QueryValue(
+	source *http.Request,
+	entry *CacheEntry[HTTPRequestOnce],
+	key string,
+) (any, bool, error) {
+
 	var queryParams map[string][]string
 
-	cacheEntry.WriteData(func(data *HTTPRequestData) {
+	entry.WriteData(func(data *HTTPRequestOnce) {
 		data.queryOnce.Do(func() {
 			data.queryParams = source.URL.Query()
 		})
 		queryParams = data.queryParams
 	})
 
-	values, exists := queryParams[name]
+	values, exists := queryParams[key]
 	if !exists || len(values) == 0 {
 		return nil, false, nil
 	}
 	return values[0], true, nil
 }
 
-// No-cache fallback methods for when caching is disabled
+// HTTPRequestOnce holds parsed HTTP request data to avoid re-parsing
+// on subsequent accesses. It uses sync.Once to ensure that
+// parsing is only done once per request instance. This is the
+// `Cached` type used by the MBPTemplate for HTTPRequestParser.
+type HTTPRequestOnce struct {
+	jsonBody    gjson.Result            // Parsed JSON body from the request
+	queryParams map[string][]string     // Parsed query parameters from the request
+	headers     map[string]string       // Parsed headers from the request
+	cookies     map[string]*http.Cookie // Parsed cookies from the request
 
-func (hp *HTTPRequestParser) getJSONValueNoCache(source *http.Request, fieldName string) (any, bool, error) {
-	if source.Body == nil || source.ContentLength == 0 {
-		return nil, false, nil
-	}
+	bodyOnce    sync.Once // Ensures the body is read only once
+	queryOnce   sync.Once // Ensures query parameters are parsed only once
+	headersOnce sync.Once // Ensures headers are parsed only once
+	cookiesOnce sync.Once // Ensures cookies are parsed only once
 
-	body, err := io.ReadAll(source.Body)
-	if err != nil {
-		return nil, false, fmt.Errorf("failed to read request body: %w", err)
-	}
-
-	if len(body) == 0 {
-		return nil, false, nil
-	}
-
-	jsonBody := gjson.ParseBytes(body)
-	result := jsonBody.Get(fieldName)
-	if !result.Exists() {
-		return nil, false, nil
-	}
-
-	return result.Value(), true, nil
+	bodyError error // Error encountered while reading the request body
 }
 
-func (hp *HTTPRequestParser) getCookieValueNoCache(source *http.Request, name string) (any, bool, error) {
-	for _, cookie := range source.Cookies() {
-		if cookie.Name == name {
-			return cookie.Value, true, nil
-		}
+func NewHTTPRequestOnce() HTTPRequestOnce {
+	return HTTPRequestOnce{
+		queryParams: make(map[string][]string),
+		headers:     make(map[string]string),
+		cookies:     make(map[string]*http.Cookie),
 	}
-
-	return nil, false, nil
-}
-
-func (hp *HTTPRequestParser) getHeaderValueNoCache(source *http.Request, name string) (any, bool, error) {
-	value := source.Header.Get(name)
-	if value == "" {
-		return nil, false, nil
-	}
-
-	return value, true, nil
-}
-
-func (hp *HTTPRequestParser) getQueryValueNoCache(source *http.Request, name string) (any, bool, error) {
-	values := source.URL.Query()[name]
-	if len(values) == 0 {
-		return nil, false, nil
-	}
-	return values[0], true, nil
 }

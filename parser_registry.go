@@ -6,19 +6,15 @@ import (
 	"reflect"
 )
 
-///////////////////////////////////////////////////////////////////////////////
-// Errors
-///////////////////////////////////////////////////////////////////////////////
-
-// ValidationError is a an error that occured during validating
-// from a SourceParser into a Validatable impl.
-type ValidationError struct {
+// RegistryError is a an error that occured during operating
+// on parsers at the Registry level.
+type RegistryError struct {
 	reason string
 }
 
 // Error implements the error interface
-func (ve ValidationError) Error() string {
-	return fmt.Sprintf("Failed to validate: %s", ve.reason)
+func (ve RegistryError) Error() string {
+	return fmt.Sprintf("Failed to Parse: %s", ve.reason)
 }
 
 var (
@@ -33,21 +29,9 @@ var (
 	ErrInvalidParseExecutionChainType = errors.New("improper type passed for this parse execution chain")
 )
 
-///////////////////////////////////////////////////////////////////////////////
-// Validator Impl.
-///////////////////////////////////////////////////////////////////////////////
-
-// Validatable is an interface that marks a struct as expecting
-// to be populated by a ValidationParser and later have its fields
-// validated by calling Validate()
 type Validatable interface {
 	// Validate checks the fields of the struct and returns an error
 	// if any of the fields are invalid.
-	//
-	// # It expects the implementation to be a pointer
-	//
-	// # It is expected to be called after the struct has been populated
-	//
 	Validate() error
 }
 
@@ -65,33 +49,32 @@ type Validatable interface {
 // Each SourceParser will build and cache an execution chain
 // for each unique Validatable type it is used with.
 type ParserRegistry struct {
-	RegisteredParsers map[reflect.Type]map[string]SourceParser // source type -> parser name -> parser
+	m map[reflect.Type]map[string]Parser // source type -> parser name -> parser
 }
 
-// ParserRegistryContext provides a curried validator with a specific parser selection
+// ParserRegistryContext provides a curried Registry with a specific parser selection
 type ParserRegistryContext struct {
-	validator  *ParserRegistry
+	registry   *ParserRegistry
 	parserName string
 }
 
 var (
-	_defaultSourceParsers []SourceParser = nil
+	_defaultSourceParsers []Parser = nil
 )
 
-type ValidatorOpts struct {
-	Parsers         []SourceParser
-	IncludeDefaults bool
+type ParserRegistryOpts struct {
+	Parsers         []Parser
+	ExcludeDefaults bool
 }
 
-func NewValidator(opts ValidatorOpts) (*ParserRegistry, error) {
-	v := &ParserRegistry{
-		RegisteredParsers: make(map[reflect.Type]map[string]SourceParser),
+func NewParserRegistry(opts ParserRegistryOpts) (*ParserRegistry, error) {
+	reg := &ParserRegistry{
+		m: make(map[reflect.Type]map[string]Parser),
 	}
 
-	if opts.IncludeDefaults {
-		// Register default parsers if IncludeDefaults is true
+	if !opts.ExcludeDefaults {
 		for _, parser := range _defaultSourceParsers {
-			err := v.RegisterParser(parser)
+			err := reg.Register(parser)
 			if err != nil {
 				return nil, err
 			}
@@ -99,63 +82,66 @@ func NewValidator(opts ValidatorOpts) (*ParserRegistry, error) {
 	}
 
 	for _, parser := range opts.Parsers {
-		err := v.RegisterParser(parser)
+		err := reg.Register(parser)
 		if err != nil {
 			return nil, err
 		}
 	}
 
-	return v, nil
+	return reg, nil
 }
 
 // Now your registration method can accept the non-generic interface
-func (v *ParserRegistry) RegisterParser(parser SourceParser) error {
-	sourceType := parser.GetSourceType()
-	parserName := parser.GetParserName()
+func (reg *ParserRegistry) Register(parser Parser) error {
+	typ := parser.SourceType()
+	name := parser.Name()
 
-	if v.RegisteredParsers[sourceType] == nil {
-		v.RegisteredParsers[sourceType] = make(map[string]SourceParser)
+	if reg.m[typ] == nil {
+		reg.m[typ] = make(map[string]Parser)
 	}
 
-	v.RegisteredParsers[sourceType][parserName] = parser
+	reg.m[typ][name] = parser
 	return nil
 }
 
 // WithParser returns a ValidatorContext that will use the specified parser
 // for validation. This is useful when multiple parsers are registered for
 // the same source type.
-func (v *ParserRegistry) WithParser(parserName string) *ParserRegistryContext {
+func (reg *ParserRegistry) WithParser(parserName string) *ParserRegistryContext {
 	return &ParserRegistryContext{
-		validator:  v,
+		registry:   reg,
 		parserName: parserName,
 	}
 }
 
-// Validate populates dest based on the specified parser's logic.
+// Parse populates dest based on the specified parser's logic.
 // It expects the passed dest to be a pointer.
-// If validation fails, it will return the validation error and zero all of dest's fields.
-func (vc *ParserRegistryContext) Validate(data any, dest Validatable) error {
-	parser, err := vc.validator.getParserByName(data, vc.parserName)
+func (regCtx *ParserRegistryContext) Parse(source any, dest any, validate bool) error {
+	parser, err := regCtx.registry.getParserByName(source, regCtx.parserName)
 	if err != nil {
 		return err
 	}
 
-	err = parser.Parse(data, dest)
+	err = parser.Parse(source, dest)
 	if err != nil {
-		vc.validator.Invalidate(dest)
-		return ValidationError{err.Error()}
+		if dest, ok := dest.(Validatable); ok {
+			regCtx.registry.Invalidate(dest)
+		}
+		return RegistryError{err.Error()}
 	}
 
-	err = dest.Validate()
-	if err != nil {
-		vc.validator.Invalidate(dest)
-		return ValidationError{err.Error()}
+	if dest, ok := dest.(Validatable); ok && validate {
+		err = dest.Validate()
+		if err != nil {
+			regCtx.registry.Invalidate(dest)
+			return RegistryError{err.Error()}
+		}
 	}
 
 	return nil
 }
 
-// Validate populates dest based on the implementation of source's
+// Parse populates dest based on the implementation of source's
 // parsing logic.
 //
 // It only succeeds if there is exactly one parser registered
@@ -166,35 +152,35 @@ func (vc *ParserRegistryContext) Validate(data any, dest Validatable) error {
 //
 // If validation fails, it will return the validation error
 // and zero all of dest's fields.
-func (v *ParserRegistry) Validate(data any, dest any) error {
+func (reg *ParserRegistry) Parse(source any, dest any, validate bool) error {
 
 	if dest == nil {
-		return ValidationError{reason: "dest cannot be nil"}
+		return RegistryError{reason: "dest cannot be nil"}
 	}
 	if reflect.TypeOf(dest).Kind() != reflect.Ptr ||
 		reflect.ValueOf(dest).IsNil() ||
 		reflect.TypeOf(dest).Elem().Kind() != reflect.Struct {
-		return ValidationError{reason: "dest must be a non-nil pointer to a struct type"}
+		return RegistryError{reason: "dest must be a non-nil pointer to a struct type"}
 	}
 
-	parser, err := v.tryGetDefaultParser(data)
+	parser, err := reg.tryGetDefaultParser(source)
 	if err != nil {
 		return err
 	}
 
-	err = parser.Parse(data, dest)
+	err = parser.Parse(source, dest)
 	if err != nil {
 		if dest, ok := dest.(Validatable); ok {
-			v.Invalidate(dest)
+			reg.Invalidate(dest)
 		}
-		return ValidationError{err.Error()}
+		return RegistryError{err.Error()}
 	}
 
-	if dest, ok := dest.(Validatable); ok {
+	if dest, ok := dest.(Validatable); ok && validate {
 		err = dest.Validate()
 		if err != nil {
-			v.Invalidate(dest)
-			return ValidationError{err.Error()}
+			reg.Invalidate(dest)
+			return RegistryError{err.Error()}
 		}
 	}
 
@@ -207,10 +193,10 @@ func (v *ParserRegistry) Validate(data any, dest any) error {
 // indicating that WithParser() should be used to specify which one.
 //
 // If no parser is found, it returns ErrNoParser.
-func (v *ParserRegistry) tryGetDefaultParser(data any) (SourceParser, error) {
-	typ := reflect.TypeOf(data)
+func (reg *ParserRegistry) tryGetDefaultParser(source any) (Parser, error) {
+	typ := reflect.TypeOf(source)
 
-	parser, err := v.getParserByName(typ, "")
+	parser, err := reg.getParserByName(typ, "")
 	if err != nil {
 		return nil, err
 	}
@@ -222,26 +208,26 @@ func (v *ParserRegistry) tryGetDefaultParser(data any) (SourceParser, error) {
 //
 // No name provided: If there is only one parser registered for the type,
 // it returns that parser. If multiple parsers are registered, it returns an error
-func (v *ParserRegistry) getParserByName(data any, parserName string) (SourceParser, error) {
-	t := reflect.TypeOf(data)
+func (reg *ParserRegistry) getParserByName(source any, parserName string) (Parser, error) {
+	t := reflect.TypeOf(source)
 
 	// Check registered parsers
-	if parsersForType, exists := v.RegisteredParsers[t]; exists {
+	if parsersForType, exists := reg.m[t]; exists {
 
 		// If no parser name is specified, handle the case of multiple parsers
 		// registered for the same type.
+		// - 0 parsers: return ErrNoParserRegistered
+		// - 1 parser: return it
+		// - >1 parsers: return an error
 		if parserName == "" {
-			l := len(parsersForType)
-			switch l {
+			switch len(parsersForType) {
 			case 0:
 				return nil, ErrNoParserRegistered
 			case 1:
-				// If only one parser is registered, return it
 				for _, parser := range parsersForType {
 					return parser, nil
 				}
 			default:
-				// If multiple parsers are registered, return an error
 				return nil, ErrMultipleParsersAvailable
 			}
 		}
@@ -260,10 +246,10 @@ func (v *ParserRegistry) getParserByName(data any, parserName string) (SourcePar
 // # It expects the passed v to be a pointer
 //
 // An error is returned if the argument is not reflect-able
-func (v *ParserRegistry) Invalidate(dest Validatable) error {
+func (reg *ParserRegistry) Invalidate(dest Validatable) error {
 	value := reflect.ValueOf(dest)
 	if value.Kind() != reflect.Ptr || value.IsNil() {
-		return ValidationError{reason: "Cannot invalidate a non ptr or nil value"}
+		return RegistryError{reason: "Cannot invalidate a non ptr or nil value"}
 	}
 
 	elem := value.Elem()
@@ -276,53 +262,46 @@ func (v *ParserRegistry) Invalidate(dest Validatable) error {
 // Global Singleton and Package Functions
 ///////////////////////////////////////////////////////////////////////////////
 
-var _globalValidator *ParserRegistry = nil
+var _gParserRegistry *ParserRegistry = nil
 
 func init() {
-	_defaultSourceParsers = []SourceParser{
-		NewJsonByteSliceSourceParser(),
-		NewJSONStringSourceParser(),
+	_defaultSourceParsers = []Parser{
+		// NewJsonByteSliceSourceParser(),
+		// NewJSONStringSourceParser(),
 		// NewHTTPRequestParser(),
 		// NewStringMapSourceParser(),
 		// NewStringAnyMapSourceParser(),
 	}
 
 	var err error
-	_globalValidator, err = NewValidator(ValidatorOpts{IncludeDefaults: true})
+	_gParserRegistry, err = NewParserRegistry(ParserRegistryOpts{ExcludeDefaults: false})
 	if err != nil {
-		panic(fmt.Sprintf("Failed to initialize global validator: %v", err))
+		panic(fmt.Sprintf("Failed to initialize global ParserRegistry: %v", err))
 	}
 }
 
-// Package-level functions that delegate to the global validator
+// Package-level functions that delegate to the global ParserRegistry instance
 
-// RegisterParser registers a parser with the global validator.
-// Accepts any SourceParser[T] and converts it to work with the registry.
-func RegisterParser(parser SourceParser) error {
-	return _globalValidator.RegisterParser(parser)
+func RegisterParser(parser Parser) error {
+	return _gParserRegistry.Register(parser)
 }
 
-// Validate validates data using the global validator.
-func Validate(data any, dest Validatable) error {
-	return _globalValidator.Validate(data, dest)
+func Parse(source any, dest any, validate bool) error {
+	return _gParserRegistry.Parse(source, dest, validate)
 }
 
-// WithParser returns a ValidatorContext from the global validator.
 func WithParser(parserName string) *ParserRegistryContext {
-	return _globalValidator.WithParser(parserName)
+	return _gParserRegistry.WithParser(parserName)
 }
 
-// Invalidate invalidates a struct using the global validator.
 func Invalidate(dest Validatable) error {
-	return _globalValidator.Invalidate(dest)
+	return _gParserRegistry.Invalidate(dest)
 }
 
-// GetParser gets a parser from the global validator.
-func GetParser(data any) (SourceParser, error) {
-	return _globalValidator.tryGetDefaultParser(data)
+func GetParser(source any) (Parser, error) {
+	return _gParserRegistry.tryGetDefaultParser(source)
 }
 
-// GetParserByName gets a specific parser by name from the global validator.
-func GetParserByName(data any, parserName string) (SourceParser, error) {
-	return _globalValidator.getParserByName(data, parserName)
+func GetParserByName(source any, parserName string) (Parser, error) {
+	return _gParserRegistry.getParserByName(source, parserName)
 }

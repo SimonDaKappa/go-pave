@@ -1,23 +1,35 @@
 package pave
 
 import (
+	"errors"
 	"fmt"
 	"reflect"
 	"slices"
 	"strings"
 )
 
-// This file contains the tag parser for the pave pacckage. It is responsible for parsing the tags
-// associated with fields in structs that are used for parsing and validation. The tag parser
-// interprets the tags and generates the appropriate parsing and validation logic based on the
-// specified tags. It supports all tags in the following grammar:
+// Base Error types for tag parsing errors
+var (
+	ErrNoParseTagInField        = errors.New("no parse tag found in field")
+	ErrUnallowedBindingName     = errors.New("binding name is not allowed")
+	ErrEmptyBindingIdentifier   = errors.New("binding identifier cannot be empty")
+	ErrInvalidBindingTagFormat  = errors.New("invalid binding tag format")
+	ErrInvalidBindingInfoFormat = errors.New("invalid binding info format")
+	ErrUnallowedBindingModifier = errors.New("binding modifier is not allowed")
+)
+
+// This file contains the tag parser for the pave pacckage. It is responsible
+// for parsing the tags associated with fields in structs that are used for
+// parsing and validation. The tag parser interprets the tags and generates
+// the appropriate parsing and validation logic based on the specified tags.
+// It supports all tags in the following grammar:
 //
 // Tag grammar:
 //     <field> <type> <tag>
 // field:
-//     <string>
+//     <Go Literal>
 // type:
-//     <Type>
+//     <Go Literal>
 // tag:
 //     '<tag_parse> <tag_validate>'
 //
@@ -30,14 +42,14 @@ import (
 //     <Go Literal>
 //
 // tag_binding_list:
-//     [<tag_binding>]^*
+//     [<tag_binding>]^* // Space Separated
 // tag_binding:
 //     <binding_name>:'<binding_identifier>,<binding_modifier_list>' // binding tags are parser specific but must follow this grammar
 //
 // binding_name, binding_identifier:
 //     <string>
 // binding_modifier_list:
-//     [binding_modifier]^* // Delimeted with "," end-delim optional
+//     [binding_modifier]^* // Delimited with "," end-delim optional
 // binding_modifier:
 //     omitempty | omiterr | omitnil | ... // (any other modifiers past this point are parser specific)
 //
@@ -46,9 +58,6 @@ import (
 
 /*
 Grammar Notes:
-- source_tags are parser-extension specific, they must be parseable by the base grammar parser
-  something like:
-    type sourcetagfunc func(tags ...string) ([]FieldSource, error)
 - how to handle fields that are structs?
     1. Require explicit delineation between recursive parsing and non-recursive parsing
     2. Use a tag to indicate that the field should be parsed recursively, e.g
@@ -56,126 +65,175 @@ Grammar Notes:
     3. Recursive parsing happens by default, non-recursive parsing is indicated by the tag
 */
 
-// TagParser is a struct that holds the logic for parsing tags
-// across the pave package. It enforces a strict grammar for the tags
-// and provides the necessary abstraction to easily implement
-// custom tag values within the grammar.
-
-type TagParse struct {
-	DefaultTag  TagDefault
-	BindingTags []TagBinding
-}
-
-type TagDefault struct {
-	Value string
-}
-
-type TagBinding struct {
-	Name       string
-	Identifier string
-	Modifiers  []string
+// Corresponds to the `parse` tag in the struct field tags.
+// Example: foo int `parse:"default:'5' form:'foo,omitnil'"`
+type ParseTag struct {
+	DefaultTag  DefaultTag
+	BindingTags []BindingTag
 }
 
 type ParseTagOpts struct {
 	BindingOpts
 }
 
-// GetBindings parses the tag string and returns a structured representation of the tag.
-func GetBindings(field reflect.StructField, opts ParseTagOpts) ([]FieldBinding, string, error) {
-	parseSubTag, ok := field.Tag.Lookup("parse")
-	if !ok {
-		return nil, "", fmt.Errorf("field %s does not have a parse tag", field.Name)
-	}
-
-	decoded, err := decodeParseTag(parseSubTag, opts)
-	if err != nil {
-		return nil, "", fmt.Errorf("error parsing parse tag for field %s: %w",
-			field.Name, err)
-	}
-
-	bindings, err := makeBindings(decoded, opts)
-	if err != nil {
-		return nil, "", fmt.Errorf("error making field sources for field %s: %w",
-			field.Name, err)
-	}
-
-	return bindings, decoded.DefaultTag.Value, nil
+// Corresponds to the `default` subtag in the `parse` tag.
+// Example: default:'5'
+type DefaultTag struct {
+	Value string
 }
 
-func decodeParseTag(tag string, opts ParseTagOpts) (TagParse, error) {
+// Corresponds to the `binding` subtag in the `parse` tag.
+// Example: form:'foo,omitnil'
+type BindingTag struct {
+	Name       string
+	Identifier string
+	Modifiers  []string
+}
 
-	defaultTag, err := decodeTagDefault(tag)
-	if err != nil {
-		return TagParse{}, fmt.Errorf("unable to parse 'default' subtag: %v", err)
+// GetBindings parses the tag string and returns a structured representation of the tag.
+func GetBindings(field reflect.StructField, opts ParseTagOpts) ([]Binding, string, error) {
+
+	// Check if the field has a `parse` tag
+	tag, ok := field.Tag.Lookup("parse")
+	if !ok {
+		return nil, "", fmt.Errorf("%w: %s", ErrNoParseTagInField, field.Name)
 	}
 
-	bindingStrs := strings.Fields(tag)
-	bindingTags := make([]TagBinding, 0, len(bindingStrs))
+	// Decode the parse tag into a structured representation
+	parseTag, err := decodeParseTag(tag, opts)
+	if err != nil {
+		return nil, "", fmt.Errorf("error parsing parse tag for field %s: %w", field.Name, err)
+	}
 
-	for _, bindingStr := range bindingStrs {
-		if strings.HasPrefix(bindingStr, DefaultValueSubTagPrefixWithKVDelimiter) {
-			continue
-		}
-		bindingTag, err := decodeTagBindings(bindingStr, opts)
+	// Generate bindings from the decoded parse tag
+	bindings, err := makeBindings(parseTag, opts)
+	if err != nil {
+		return nil, "", fmt.Errorf("error making field sources for field %s: %w", field.Name, err)
+	}
+
+	return bindings, parseTag.DefaultTag.Value, nil
+}
+
+func decodeParseTag(tag string, opts ParseTagOpts) (ParseTag, error) {
+
+	// Decode the default tag first
+	defaultTag, err := decodeDefaultTag(tag)
+	if err != nil {
+		return ParseTag{}, fmt.Errorf("unable to parse 'default' subtag: %w", err)
+	}
+
+	bindingMap, err := SubTags(tag, DefaultValueSubTagPrefix)
+	if err != nil {
+		return ParseTag{}, fmt.Errorf("unable to parse binding tags: %w", err)
+	}
+	bindingTags := make([]BindingTag, 0, len(bindingMap))
+
+	for key, value := range bindingMap {
+
+		combined := strings.TrimSpace(
+			key + DefaultKeyValueTagDelimiter + sDefaultSubTagScopeDelimiter + value + sDefaultSubTagScopeDelimiter,
+		)
+
+		bindingTag, err := decodeBindingTags(combined, opts)
 		if err != nil {
-			return TagParse{}, err
+			return ParseTag{}, err
 		}
+
 		bindingTags = append(bindingTags, bindingTag)
 	}
 
-	return TagParse{
+	return ParseTag{
 		BindingTags: bindingTags,
 		DefaultTag:  defaultTag,
 	}, nil
 }
 
-func decodeTagDefault(ptag string) (TagDefault, error) {
+func decodeDefaultTag(ptag string) (DefaultTag, error) {
 	value, err := SubTag(ptag, DefaultValueSubTagPrefix)
-	return TagDefault{value}, err
+	if err != nil {
+		if errors.Is(err, ErrSubTagNotFound) {
+			// If the default tag is not found, return an empty DefaultTag
+			return DefaultTag{}, nil
+		} else {
+			return DefaultTag{}, fmt.Errorf("error parsing default tag: %w", err)
+		}
+	}
+	return DefaultTag{value}, err
 }
 
-func decodeTagBindings(stag string, opts ParseTagOpts) (TagBinding, error) {
+func decodeBindingTags(stag string, opts ParseTagOpts) (BindingTag, error) {
 	// Split the tag into its components
-	parts := strings.Split(stag, ":")
+	parts := strings.Split(stag, DefaultKeyValueTagDelimiter)
 	if len(parts) != 2 {
-		return TagBinding{}, fmt.Errorf("invalid source tag format: %s", stag)
+		return BindingTag{}, fmt.Errorf("%w: %s", ErrInvalidBindingTagFormat, stag)
 	}
 
-	sourceName := parts[0]
-	if !slices.Contains(opts.AllowedBindingModifiers, sourceName) {
-		return TagBinding{}, fmt.Errorf("source name %s is not allowed", sourceName)
+	// Extract binding name from the first part
+	// Example: "form:'foo,omitnil'" -> "form" as binding name
+	// and "foo,omitnil" as binding info
+	bindingName := parts[0]
+	if !slices.Contains(opts.AllowedBindingNames, bindingName) {
+		return BindingTag{}, fmt.Errorf("%w: %s", ErrUnallowedBindingName, bindingName)
 	}
 
-	sourceInfo := parts[1]
+	// Extract identifier and modifiers from the second part
+	// Example: "'foo,omitnil'" -> "foo" as identifier and "omitnil" as modifier
+	// If there are no modifiers, it will just be the identifier
+	bindingInfo := strings.Split(parts[1], ",")
 
-	// Further split the sourceInfo into identifier and modifiers
-	sourceParts := strings.Split(sourceInfo, ",")
-	if len(sourceParts) == 0 {
-		return TagBinding{}, fmt.Errorf("invalid source info format: %s", sourceInfo)
+	var (
+		bindingIdentifier string
+		bindingModifiers  []string
+	)
+
+	switch infoLen := len(bindingInfo); infoLen {
+	case 0:
+		return BindingTag{}, fmt.Errorf("%w: %s", ErrInvalidBindingInfoFormat, parts[1])
+	default:
+		bindingIdentifier = strings.Trim(bindingInfo[0], sDefaultSubTagScopeDelimiter)
+		if len(bindingIdentifier) == 0 {
+			return BindingTag{}, fmt.Errorf("%w in tag: %s", ErrEmptyBindingIdentifier, stag)
+		}
+
+		if infoLen > 1 {
+			bindingModifiers = bindingInfo[1:]
+			if len(bindingModifiers) > 0 {
+				// Trim any single quotes from the modifiers
+				for i, modifier := range bindingModifiers {
+					bindingModifiers[i] = strings.Trim(modifier, sDefaultSubTagScopeDelimiter)
+				}
+			}
+		}
+
 	}
 
-	sourceIdentifier := sourceParts[0]
-	sourceModifiers := sourceParts[1:]
-	for _, modifier := range sourceModifiers {
-		if !slices.Contains(opts.AllowedBindingNames, modifier) {
-			return TagBinding{}, fmt.Errorf("source modifier %s is not allowed", modifier)
+	for _, modifier := range bindingModifiers {
+		switch modifier {
+		case OmitEmptyBindingModifier, OmitErrorBindingModifier, OmitNilBindingModifier:
+			// These are standard modifiers, no action needed
+			continue
+		default:
+			if !slices.Contains(opts.CustomBindingModifiers, modifier) {
+				return BindingTag{}, fmt.Errorf("%w: %s", ErrUnallowedBindingModifier, modifier)
+			}
 		}
 	}
 
-	return TagBinding{
-		Name:       sourceName,
-		Identifier: sourceIdentifier,
-		Modifiers:  sourceModifiers,
+	return BindingTag{
+		Name:       bindingName,
+		Identifier: bindingIdentifier,
+		Modifiers:  bindingModifiers,
 	}, nil
 }
 
-func makeBindings(ptag TagParse, opts ParseTagOpts) ([]FieldBinding, error) {
-	bindings := make([]FieldBinding, 0, len(ptag.BindingTags))
+func makeBindings(ptag ParseTag, opts ParseTagOpts) ([]Binding, error) {
+	bindings := make([]Binding, 0, len(ptag.BindingTags))
 
-	for _, btag := range ptag.BindingTags {
-		binding, err := btag.toFieldBinding(opts.AllowedBindingModifiers)
+	for _, bindingTag := range ptag.BindingTags {
+
+		binding, err := bindingTag.toBinding(opts.CustomBindingModifiers)
 		if err != nil {
-			return nil, fmt.Errorf("error creating field binding from tag %s: %w", btag.Name, err)
+			return nil, fmt.Errorf("error creating field binding from tag %s: %w", bindingTag.Name, err)
 		}
 		bindings = append(bindings, binding)
 	}
@@ -183,29 +241,32 @@ func makeBindings(ptag TagParse, opts ParseTagOpts) ([]FieldBinding, error) {
 	return bindings, nil
 }
 
-func (t TagBinding) toFieldBinding(allowedModifiers []string) (FieldBinding, error) {
+func (t BindingTag) toBinding(customModifiers []string) (Binding, error) {
 
-	modifiers := FieldBindingModifiers{}
+	modifiers := BindingModifiers{}
+	omit := false
 	for _, modifier := range t.Modifiers {
 		switch modifier {
 		case OmitEmptyBindingModifier:
 			modifiers.OmitEmpty = true
-		case OmitErrBindingModifier:
+			omit = true
+		case OmitErrorBindingModifier:
 			modifiers.OmitError = true
+			omit = true
 		case OmitNilBindingModifier:
 			modifiers.OmitNil = true
-		case RequiredBindingModifier:
-			modifiers.Required = true
+			omit = true
 		default:
-			if !slices.Contains(allowedModifiers, modifier) {
-				return FieldBinding{}, fmt.Errorf("unrecognized/unallowed binding modifier: %s", modifier)
+			if !slices.Contains(customModifiers, modifier) {
+				return Binding{}, fmt.Errorf("%w: %s", ErrUnallowedBindingModifier, modifier)
 			} else {
 				modifiers.Custom[modifier] = true
 			}
 		}
 	}
+	modifiers.Required = !omit
 
-	return FieldBinding{
+	return Binding{
 		Name:       t.Name,
 		Identifier: t.Identifier,
 		Modifiers:  modifiers,
@@ -213,7 +274,7 @@ func (t TagBinding) toFieldBinding(allowedModifiers []string) (FieldBinding, err
 }
 
 func SubTags(tag string, excludes ...string) (map[string]string, error) {
-	return SubTagsByDelimiter(tag, DefaultSubTagScopeDelimiter, excludes...)
+	return SubTagsByDelimiter(tag, bDefaultSubTagScopeDelimiter, excludes...)
 }
 
 func SubTagsByDelimiter(tag string, delim byte, excludes ...string) (map[string]string, error) {
@@ -361,22 +422,32 @@ func SubTagsByDelimiter(tag string, delim byte, excludes ...string) (map[string]
 }
 
 func SubTag(tag string, key string) (string, error) {
-	return SubTagByDelimeter(tag, key, DefaultSubTagScopeDelimiter)
+	return SubTagByDelimeter(tag, key, bDefaultSubTagScopeDelimiter)
 }
 
+var (
+	ErrSubTagNotFound = fmt.Errorf("subtag not found")
+)
+
 // Example: tag = `parse:"default:5 foo:'bar,omitnil'" validate:"min=1,max=10"`
+//
 // tag.Lookup("parse")  should return ptag = "default:5 foo:bar,omitnil"
-// SubTagByDelimeter(ptag, "foo", '\”) should return  'bar,omitnil
-// SubTagByDelimeter(ptag, "validate", '\”) should return "min=1,max=10"
+//
+// SubTagByDelimeter(ptag, "foo", '\”) should return "bar,omitnil"
+//
+// SubTagByDelimeter(tag, "validate", '\"') should return "min=1,max=10" <- Identical to field.Tag.Lookup("validate")
 //
 // Nested example: parse:"a:'b:'c:'d”'"
-// SubTag(tag, "a") should return "b:'c:'d”"
+//
+// ptag := tag.Lookup("parse") // "a:'b:'c:'d'"
+//
+// SubTag(ptag, "a") should return "b:'c:'d”"
 func SubTagByDelimeter(tag string, key string, delim byte) (string, error) {
 
 	search := key + ":"
 	idx := strings.Index(tag, search)
 	if idx == -1 {
-		return "", fmt.Errorf("subtag %q not found", key)
+		return "", ErrSubTagNotFound
 	}
 
 	// Find the start of the value (after the colon and any whitespace)
@@ -403,7 +474,7 @@ func SubTagByDelimeter(tag string, key string, delim byte) (string, error) {
 	start++ // skip opening delimiter
 
 	// Find the closing delimiter, handling escaped delimiters and nested subtags
-	var value strings.Builder
+	var builder strings.Builder
 	escaped := false
 	nestingLevel := 0 // Track how deep we are in nested subtags
 
@@ -412,7 +483,7 @@ func SubTagByDelimeter(tag string, key string, delim byte) (string, error) {
 
 		if c == '\\' && !escaped {
 			escaped = true
-			value.WriteByte(c)
+			builder.WriteByte(c)
 			continue
 		}
 
@@ -423,19 +494,19 @@ func SubTagByDelimeter(tag string, key string, delim byte) (string, error) {
 				if i+1 < len(tag) && tag[i+1] == delim {
 					nestingLevel++
 					// Add the colon to output and skip the next delimiter (it's part of the nesting)
-					value.WriteByte(c)
+					builder.WriteByte(c)
 					i++ // Skip the next delimiter
-					value.WriteByte(tag[i])
+					builder.WriteByte(tag[i])
 					escaped = false
 					continue
 				}
 			case delim:
 				if nestingLevel == 0 {
 					// This is our closing delimiter
-					return value.String(), nil
+					return builder.String(), nil
 				} else {
 					// This closes a nested subtag - add the delimiter to output before reducing nesting
-					value.WriteByte(c)
+					builder.WriteByte(c)
 					nestingLevel--
 					escaped = false
 					continue
@@ -443,9 +514,19 @@ func SubTagByDelimeter(tag string, key string, delim byte) (string, error) {
 			}
 		}
 
-		value.WriteByte(c)
+		builder.WriteByte(c)
 		escaped = false
 	}
 
 	return "", fmt.Errorf("unterminated subtag value for %q", key)
+}
+
+func trimDelimiter(value string, delim byte) string {
+	if len(value) > 0 && value[0] == delim {
+		value = value[1:]
+	}
+	if len(value) > 0 && value[len(value)-1] == delim {
+		value = value[:len(value)-1]
+	}
+	return value
 }

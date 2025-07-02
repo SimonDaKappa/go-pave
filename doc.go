@@ -39,7 +39,7 @@
 //     and prioritization of sources when parsing, are cached, and can be reused
 //     for any Validatable type that has the correct tags.
 //
-// All parsers must implement the [SourceParser](https://pkg.go.dev/pave#SourceParser) interface,
+// All parsers must implement the [Parser](https://pkg.go.dev/pave#SourceParser) interface,
 // which defines the methods required for parsing data from a source into a Validatable type.
 //
 // All parsers must also support the following source tag modifiers:

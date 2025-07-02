@@ -248,8 +248,8 @@ func TestTagGrammarSimple(t *testing.T) {
 
 	opts := ParseTagOpts{
 		BindingOpts: BindingOpts{
-			AllowedBindingNames:     []string{"json", "http", "form"},
-			AllowedBindingModifiers: []string{"omitempty", "omiterr", "omitnil", "required"},
+			AllowedBindingNames:    []string{"json", "http", "form"},
+			CustomBindingModifiers: []string{"omitempty", "omiterr", "omitnil", "required"},
 		},
 	}
 
@@ -288,8 +288,8 @@ func TestTagGrammarMedium(t *testing.T) {
 
 	opts := ParseTagOpts{
 		BindingOpts: BindingOpts{
-			AllowedBindingNames:     []string{"json", "http", "form"},
-			AllowedBindingModifiers: []string{"omitempty", "omiterr", "omitnil", "required"},
+			AllowedBindingNames:    []string{"json", "http", "form"},
+			CustomBindingModifiers: []string{"omitempty", "omiterr", "omitnil", "required"},
 		},
 	}
 
@@ -338,11 +338,11 @@ func TestTagGrammarComplex(t *testing.T) {
 	type ComplexGrammarImpl struct {
 		Email string `parse:"default:'user@example.com' json:email,omitempty,omiterr form:user_email,required,omitnil http:X-User-Email,omiterr"`
 	}
-	
+
 	opts := ParseTagOpts{
 		BindingOpts: BindingOpts{
-			AllowedBindingNames:     []string{"json", "http", "form"},
-			AllowedBindingModifiers: []string{"omitempty", "omiterr", "omitnil", "required"},
+			AllowedBindingNames:    []string{"json", "http", "form"},
+			CustomBindingModifiers: []string{"omitempty", "omiterr", "omitnil", "required"},
 		},
 	}
 

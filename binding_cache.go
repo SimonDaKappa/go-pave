@@ -1,8 +1,14 @@
 package pave
 
 import (
+	"errors"
 	"sync"
 	"unsafe"
+)
+
+var (
+	ErrBindingCacheNotInitialized = errors.New("binding cache not initialized")
+	ErrBindingCacheNilEntry       = errors.New("binding cache nil entry provided")
 )
 
 // BindingCache provides thread-safe caching of binding values per source instance.
@@ -45,7 +51,7 @@ func (bc *BindingCache[S, C]) GetOrCreate(source *S, factory func() C) *CacheEnt
 		data: factory(),
 	}
 
-	// Store and return the entry that was actually stored (handles race conditions)
+	// Store and return the entry that was actually stored
 	actual, _ := bc.cache.LoadOrStore(key, newEntry)
 	return actual.(*CacheEntry[C])
 }

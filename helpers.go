@@ -4,7 +4,6 @@ import (
 	"fmt"
 	"reflect"
 	"strconv"
-	"time"
 
 	"github.com/google/uuid"
 )
@@ -27,20 +26,20 @@ import (
 //   - string to struct with time.Time field
 func setFieldValue(field reflect.Value, value string) error {
 	switch field.Kind() {
+	// If the field is a string, set it directly
 	case reflect.String:
-		// If the field is a string, set it directly
 		field.SetString(value)
+	// If the field is a array, check if it is an
 	case reflect.Array:
-		// Handle UUID array type
-		if field.Type() == reflect.TypeOf(uuid.UUID{}) {
+		if field.Type() == UUIDType {
 			uuidValue, err := uuid.Parse(value)
 			if err != nil {
 				return fmt.Errorf("error converting query value to UUID: %w", err)
 			}
 			field.Set(reflect.ValueOf(uuidValue))
 		}
+	// If the field is an int, convert the query value to int
 	case reflect.Int:
-		// If the field is an int, convert the query value to int
 		intValue, err := strconv.Atoi(value)
 		if err != nil {
 			return fmt.Errorf("error converting query value to int: %w", err)
@@ -97,7 +96,7 @@ func zeroStructFields(value reflect.Value) {
 		if !field.CanSet() {
 			continue
 		}
-		if field.Kind() == reflect.Struct && !field.Type().ConvertibleTo(reflect.TypeOf(time.Time{})) {
+		if field.Kind() == reflect.Struct && !isSpecialStructType(field.Type()) {
 			zeroStructFields(field)
 		} else {
 			field.Set(reflect.Zero(field.Type()))
@@ -109,10 +108,7 @@ func zeroStructFields(value reflect.Value) {
 // rather than being recursively parsed. Special types include time.Time, uuid.UUID, etc.
 func isSpecialStructType(t reflect.Type) bool {
 	// List of struct types that should be treated as primitives
-	specialTypes := []reflect.Type{
-		reflect.TypeOf(time.Time{}),
-		reflect.TypeOf(uuid.UUID{}),
-	}
+	specialTypes := []reflect.Type{TimeType, UUIDType}
 
 	for _, specialType := range specialTypes {
 		if t == specialType {
@@ -120,4 +116,40 @@ func isSpecialStructType(t reflect.Type) bool {
 		}
 	}
 	return false
+}
+
+func ParseTypeErasedPointer[S any](
+	source any,
+	dest any,
+	parse func(source *S, dest any) error,
+) error {
+	return func(source any, dest any) error {
+		typedSource, ok := source.(*S)
+		if !ok {
+			return fmt.Errorf("expected source type %T, got %T", *new(S), source)
+		}
+
+		if (reflect.TypeOf(dest).Kind() != reflect.Ptr) ||
+			(reflect.TypeOf(dest).Elem().Kind() != reflect.Struct) {
+			return fmt.Errorf("destination must be a pointer to a struct, got %T", dest)
+		}
+
+		return parse(typedSource, dest)
+	}(source, dest)
+}
+
+func ParseTypeErasedSlice[S any, Slice []S](
+	source any,
+	dest any,
+	parse func(source []S, dest any) error,
+) error {
+	typedSource, ok := source.(Slice)
+	if !ok {
+		return fmt.Errorf("expected source type %T, got %T", *new(S), source)
+	}
+	if (reflect.TypeOf(dest).Kind() != reflect.Ptr) ||
+		(reflect.TypeOf(dest).Elem().Kind() != reflect.Struct) {
+		return fmt.Errorf("destination must be a pointer to a struct, got %T", dest)
+	}
+	return parse(typedSource, dest)
 }
