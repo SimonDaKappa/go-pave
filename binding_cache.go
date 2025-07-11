@@ -20,7 +20,7 @@ type BindingCache[S any, C any] struct {
 
 // CacheEntry holds the cached data for a specific source instance
 type CacheEntry[C any] struct {
-	data  C
+	data  C            // Cached data
 	mutex sync.RWMutex // Allows concurrent reads, exclusive writes
 }
 
@@ -38,7 +38,7 @@ func (bc *BindingCache[S, C]) getSourceKey(source *S) uintptr {
 
 // GetOrCreate returns the cache entry for the source, creating one if it doesn't exist.
 // The factory function is called only once per source instance, even under concurrent access.
-func (bc *BindingCache[S, C]) GetOrCreate(source *S, factory func() C) *CacheEntry[C] {
+func (bc *BindingCache[S, C]) GetOrCreate(source *S, new func() C) *CacheEntry[C] {
 	key := bc.getSourceKey(source)
 
 	// Try to load existing entry
@@ -48,7 +48,7 @@ func (bc *BindingCache[S, C]) GetOrCreate(source *S, factory func() C) *CacheEnt
 
 	// Create new entry
 	newEntry := &CacheEntry[C]{
-		data: factory(),
+		data: new(),
 	}
 
 	// Store and return the entry that was actually stored

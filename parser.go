@@ -26,11 +26,10 @@ import (
 //     which is useful for more complex cases where you want to try
 //     multiple sources or methods of extracting the data. This allows
 //     for more:
-//     -- Flexibility in how fields are populated
-//     -- Reusability of the same struct across different contexts.
-//     -- Caching of parsed data to avoid unnecessary recomputation
-//     and allocations.
-//     -- Tolerant, configurable error handling during parsing
+//     1. Flexibility in how fields are populated
+//     2. Reusability of the same struct across different contexts.
+//     3. Caching of parsed data to avoid unnecessary recomputation/gc.
+//     4. Tolerant, configurable error handling during parsing
 type Parser interface {
 	// Parse extracts the information from the implementation and populates
 	// dest's fields with the values from the source.

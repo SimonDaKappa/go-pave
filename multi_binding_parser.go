@@ -22,25 +22,31 @@ import (
 //     pointer. IT WILL PANIC. All methods should take a pointer to S instead.
 //   - C: The type of the cached value that will be used by the parser during
 //     binding operations. This is typically a struct that contains the cached
-//     values for the source type, allowing the parser to avoid expensive
-//     operations by reusing previously computed values.
+//     values for binding's that sweep over all possible values,
+//     allowing the parser to avoid expensive operations by reusing previously
+//     computed values.
 //
 // The template optionally supports caching of expensive operations per source
 // instance using the provided BindingCache. This is useful for parsers that
 // rely on external binding implementation that may be expensive to call
 // multiple times for the same source instance.
 type BaseMBParser[S any, C any] struct {
-	PCMgr     *ParseChainManager[S]
+	PCMgr     *PCManager[S]
 	BMgr      BindingManager[S, C]
 	BCache    *BindingCache[S, C]
 	useBCache bool
 }
 
 type BaseMBParserOpts struct {
-	PCMOpts  ParseChainManagerOpts
+	PCMOpts  PCManagerOpts
 	UseCache bool
 }
 
+// s
+//
+// Note: You do not have to specify type constraints. Go will infer from
+// the BindingManager and ParseChainManager what the type constraints are
+// for the source and cached types.
 func NewBaseMBParser[S any, C any](
 	bMgr BindingManager[S, C],
 	opts BaseMBParserOpts,
@@ -68,8 +74,8 @@ func NewBaseMBParser[S any, C any](
 
 	template := &BaseMBParser[S, C]{}
 
-	pcMgr := NewParseChainManager(
-		template.BindingHandlerAdapter,
+	pcMgr := NewPCManager(
+		template.bindingHandlerAdapter,
 		opts.PCMOpts,
 	)
 
@@ -129,10 +135,10 @@ func (base *BaseMBParser[S, C]) parse(source *S, dest any) error {
 	return chain.Execute(source, dest)
 }
 
-func (base *BaseMBParser[S, C]) BindingHandlerAdapter(
+func (base *BaseMBParser[S, C]) bindingHandlerAdapter(
 	source *S,
 	binding Binding,
-) (any, bool, error) {
+) BindingResult {
 
 	// Deref for interface but still keep pointer semantics
 	if base.useBCache {

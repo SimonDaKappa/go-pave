@@ -6,17 +6,6 @@ import (
 	"reflect"
 )
 
-// RegistryError is a an error that occured during operating
-// on parsers at the Registry level.
-type RegistryError struct {
-	reason string
-}
-
-// Error implements the error interface
-func (ve RegistryError) Error() string {
-	return fmt.Sprintf("Failed to Parse: %s", ve.reason)
-}
-
 var (
 	ErrNoFieldSourcesInTag            = errors.New("no fields sources defined in tag but attempted to validate field")
 	ErrParserAlreadyRegistered        = errors.New("a parser with this name for this source-type is already registered")
@@ -127,14 +116,14 @@ func (regCtx *ParserRegistryContext) Parse(source any, dest any, validate bool) 
 		if dest, ok := dest.(Validatable); ok {
 			regCtx.registry.Invalidate(dest)
 		}
-		return RegistryError{err.Error()}
+		return fmt.Errorf("failed to parse with %s: %w", parser.Name(), err)
 	}
 
 	if dest, ok := dest.(Validatable); ok && validate {
 		err = dest.Validate()
 		if err != nil {
 			regCtx.registry.Invalidate(dest)
-			return RegistryError{err.Error()}
+			return fmt.Errorf("validation failed after parsing with %s: %w", parser.Name(), err)
 		}
 	}
 
@@ -155,12 +144,12 @@ func (regCtx *ParserRegistryContext) Parse(source any, dest any, validate bool) 
 func (reg *ParserRegistry) Parse(source any, dest any, validate bool) error {
 
 	if dest == nil {
-		return RegistryError{reason: "dest cannot be nil"}
+		return fmt.Errorf("dest cannot be nil")
 	}
 	if reflect.TypeOf(dest).Kind() != reflect.Ptr ||
 		reflect.ValueOf(dest).IsNil() ||
 		reflect.TypeOf(dest).Elem().Kind() != reflect.Struct {
-		return RegistryError{reason: "dest must be a non-nil pointer to a struct type"}
+		return fmt.Errorf("dest must be a non-nil pointer to a struct type")
 	}
 
 	parser, err := reg.tryGetDefaultParser(source)
@@ -173,14 +162,14 @@ func (reg *ParserRegistry) Parse(source any, dest any, validate bool) error {
 		if dest, ok := dest.(Validatable); ok {
 			reg.Invalidate(dest)
 		}
-		return RegistryError{err.Error()}
+		return fmt.Errorf("failed to parse with %s: %w", parser.Name(), err)
 	}
 
 	if dest, ok := dest.(Validatable); ok && validate {
 		err = dest.Validate()
 		if err != nil {
 			reg.Invalidate(dest)
-			return RegistryError{err.Error()}
+			return fmt.Errorf("validation failed after parsing with %s: %w", parser.Name(), err)
 		}
 	}
 
@@ -249,7 +238,7 @@ func (reg *ParserRegistry) getParserByName(source any, parserName string) (Parse
 func (reg *ParserRegistry) Invalidate(dest Validatable) error {
 	value := reflect.ValueOf(dest)
 	if value.Kind() != reflect.Ptr || value.IsNil() {
-		return RegistryError{reason: "Cannot invalidate a non ptr or nil value"}
+		return fmt.Errorf("cannot invalidate a non ptr or nil value")
 	}
 
 	elem := value.Elem()
@@ -268,7 +257,7 @@ func init() {
 	_defaultSourceParsers = []Parser{
 		// NewJsonByteSliceSourceParser(),
 		// NewJSONStringSourceParser(),
-		// NewHTTPRequestParser(),
+		NewHTTPRequestParser(),
 		// NewStringMapSourceParser(),
 		// NewStringAnyMapSourceParser(),
 	}

@@ -138,12 +138,12 @@ func ParseTypeErasedPointer[S any](
 	}(source, dest)
 }
 
-func ParseTypeErasedSlice[S any, Slice []S](
+func ParseTypeErasedSlice[S any](
 	source any,
 	dest any,
 	parse func(source []S, dest any) error,
 ) error {
-	typedSource, ok := source.(Slice)
+	typedSource, ok := source.([]S)
 	if !ok {
 		return fmt.Errorf("expected source type %T, got %T", *new(S), source)
 	}

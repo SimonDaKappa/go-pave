@@ -16,6 +16,7 @@ const (
 	bDefaultSubTagScopeDelimiter            byte   = byte('\'')
 	sDefaultSubTagScopeDelimiter            string = "'"
 	DefaultKeyValueTagDelimiter             string = ":"
+	CommaDelimeter                          string = ","
 )
 
 // constants for builtin source bindings in parse subtag
@@ -52,19 +53,38 @@ const (
 
 // reflect.TypeOf constants for type checks
 var (
-	HTTPRequestType   = reflect.TypeOf((*http.Request)(nil))
-	JSONByteSliceType = reflect.TypeOf([]byte{})
-	StringType        = reflect.TypeOf("")
-	StringMapType     = reflect.TypeOf(map[string]string{})
-	StringAnyMapType  = reflect.TypeOf(map[string]any{})
+	HTTPRequestType   reflect.Type
+	JSONByteSliceType reflect.Type
+	StringType        reflect.Type
+	StringMapType     reflect.Type
+	StringMapAnyType  reflect.Type
 )
 
 // reflect.TypeOf constants for special struct types
 var (
-	TimeType = reflect.TypeOf(time.Time{})
-	UUIDType = reflect.TypeOf(uuid.UUID{})
+	TimeType reflect.Type
+	UUIDType reflect.Type
 )
 
 func init() {
+	initTypes()
+}
 
+func initTypes() {
+	initBuiltinSourceTypes()
+	initSpecialStructTypes()
+}
+
+func initBuiltinSourceTypes() {
+	HTTPRequestType = reflect.TypeOf(http.Request{})
+	JSONByteSliceType = reflect.TypeOf([]byte{})
+	StringType = reflect.TypeOf("")
+	StringMapType = reflect.TypeOf(map[string]string{})
+	StringMapAnyType = reflect.TypeOf(map[string]any{})
+}
+
+func initSpecialStructTypes() {
+	// Initialize special struct types that should not be parsed recursively
+	TimeType = reflect.TypeOf(time.Time{})
+	UUIDType = reflect.TypeOf(uuid.UUID{})
 }

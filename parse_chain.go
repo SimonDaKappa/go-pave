@@ -1,44 +1,61 @@
 package pave
 
 import (
+	"errors"
 	"fmt"
 	"reflect"
 	"sync"
 )
 
+var (
+	// ErrNoStepBindings is returned when a parse step has no bindings
+	// to execute. This can happen if the field is a struct with no bindings,
+	// it will be skipped in the parse chain.
+	ErrNoStepBindings             = fmt.Errorf("no bindings found for field")
+	ErrFailedToParseTag           = fmt.Errorf("failed to parse tag for field")
+	ErrAllBindingsFailedNoDefault = fmt.Errorf("All bindings failed with no default value for field")
+	ErrFailedToBuildSubChain      = fmt.Errorf("failed to build sub-chain for field")
+	ErrNilParseChain              = fmt.Errorf("parse chain is empty for type")
+)
+
 // ParseChain represents a linked list of parse steps for a struct type
 //
-// Uses a function-based approach for source value retrieval, eliminating
+// Uses a function-based approach for binding value retrieval, eliminating
 // the need for each parser to reimplement the same linked list traversal logic.
-// The SourceGetter function provides dynamic dispatch to the appropriate
+//
+// The BindingHandlerFunc provides dynamic dispatch to the appropriate
 // value retrieval method for each parser type.
 //
 // # It takes one generic type S
 //
 // S is the Go Type that data will be sourced from (e.g http.Request)
-type ParseChain[Source any] struct {
-	StructType reflect.Type           // StructType is the type of the struct being parsed
-	Head       *ParseStep[Source]     // Head is the first step in the chain
-	Handler    BindingHandler[Source] // Function to get values from sources
+type ParseChain[S any] struct {
+	StructType reflect.Type          // StructType is the type of the struct being parsed
+	Head       *ParseStep[S]         // Head is the first step in the chain
+	Handler    BindingHandlerFunc[S] // Function to get values from sources
 }
 
 // ParseStep represents a single step in the execution chain
-type ParseStep[Source any] struct {
-	Next         *ParseStep[Source]  // Next is the next step in the current chain.
-	SubChain     *ParseChain[Source] // Sub-chain for recursive struct parsing. Nil if not a struct field.
-	Bindings     []Binding           // Ordered list of bindings to try
-	FieldName    string              // Name of the field for error reporting
-	DefaultValue string              // Default value for the field if bindings fail and not required to succeed
-	IsStruct     bool                // if this field is a struct that needs recursive parsing
-	FieldIndex   int                 // Index of the field in the struct
+type ParseStep[S any] struct {
+	Next          *ParseStep[S]  // Next is the next step in the current chain.
+	SubChain      *ParseChain[S] // Sub-chain for recursive struct parsing. Nil if not a struct field.
+	Bindings      []Binding      // Ordered list of bindings to try
+	FieldName     string         // Name of the field for error reporting
+	DefaultValue  string         // Default value for the field if bindings fail and not required to succeed
+	IsStruct      bool           // if this field is a struct that needs recursive parsing
+	ShouldRecurse bool           // Indicates whether the struct-type field gets 1-step populated by binding or not
+	FieldIndex    int            // Index of the field in the struct
 }
 
 // Execute runs the entire parse chain using the provided source getter
-func (chain *ParseChain[Source]) Execute(source *Source, dest any) error {
+func (chain *ParseChain[S]) Execute(
+	source *S, dest any,
+) error {
 
 	if chain.Head == nil {
 		return fmt.Errorf(
-			"parse chain is empty for type %s",
+			"%w: %s",
+			ErrNilParseChain,
 			chain.StructType.Name(),
 		)
 	}
@@ -61,12 +78,11 @@ func (chain *ParseChain[Source]) Execute(source *Source, dest any) error {
 }
 
 // doStep executes a single parse step
-func (chain *ParseChain[Source]) doStep(
-	sourceData *Source,
-	dest any,
-	step *ParseStep[Source],
+func (chain *ParseChain[S]) doStep(
+	sourceData *S, dest any, step *ParseStep[S],
 ) error {
 
+	// Ensure we have a valid destination value
 	destValue := reflect.ValueOf(dest)
 	if destValue.Kind() == reflect.Ptr {
 		destValue = destValue.Elem()
@@ -74,52 +90,44 @@ func (chain *ParseChain[Source]) doStep(
 
 	field := destValue.Field(step.FieldIndex)
 
-	// Skip unsettable fields
 	if !field.CanSet() {
 		return nil
 	}
 
-	// Handle struct fields with recursive parsing
-	if step.IsStruct {
+	if step.IsStruct && step.ShouldRecurse {
 		return chain.doStepRecursive(sourceData, field, step)
 	}
 
-	// Handle regular fields with source parsing
 	return chain.doStepRegular(sourceData, field, step)
 }
 
+var ()
+
 // doStepRegular handles parsing of regular (non-struct) fields
-func (chain *ParseChain[Source]) doStepRegular(
-	sourceData *Source,
-	field reflect.Value,
-	step *ParseStep[Source],
+func (chain *ParseChain[S]) doStepRegular(
+	sourceData *S, field reflect.Value, step *ParseStep[S],
 ) error {
-	// Try each source in order
+
 	allOmitEmpty := true
 	allOmitError := true
 	allOmitNil := true
-
 	var errs error
 
 	for _, binding := range step.Bindings {
 		modifiers := binding.Modifiers
-		allOmitEmpty = allOmitEmpty && binding.Modifiers.OmitEmpty
-		allOmitError = allOmitError && binding.Modifiers.OmitError
-		allOmitNil = allOmitNil && binding.Modifiers.OmitNil
 
-		value, found, err := chain.Handler(sourceData, binding)
-		if err != nil {
+		allOmitEmpty = allOmitEmpty && modifiers.OmitEmpty
+		allOmitError = allOmitError && modifiers.OmitError
+		allOmitNil = allOmitNil && modifiers.OmitNil
 
+		result := chain.Handler(sourceData, binding)
+
+		if result.Error != nil {
 			if modifiers.OmitError {
 				continue
 			}
 
-			errs = fmt.Errorf(
-				"%w: error getting value from source %s: %w",
-				errs,
-				binding.Name,
-				err,
-			)
+			errs = fmt.Errorf("%w: %w", errs, result.Error)
 
 			if modifiers.Required {
 				return errs
@@ -127,9 +135,9 @@ func (chain *ParseChain[Source]) doStepRegular(
 			continue
 		}
 
-		if found {
-			if value != nil {
-				return setFieldValue(field, fmt.Sprintf("%v", value))
+		if result.Found {
+			if result.Value != nil {
+				return setFieldValue(field, fmt.Sprintf("%v", result.Value))
 			}
 			if modifiers.OmitNil {
 				continue
@@ -137,7 +145,10 @@ func (chain *ParseChain[Source]) doStepRegular(
 		}
 
 		if modifiers.Required {
-			return fmt.Errorf("required field %s not found in source %s", binding.Identifier, binding.Name)
+			return fmt.Errorf(
+				"required field %s not found in source %s",
+				binding.Identifier, binding.Name,
+			)
 		}
 	}
 
@@ -146,7 +157,10 @@ func (chain *ParseChain[Source]) doStepRegular(
 		if step.DefaultValue != "" {
 			return setFieldValue(field, step.DefaultValue)
 		} else {
-			errs = fmt.Errorf("%w: all sources failed for field %v and no default value provided", errs, field)
+			errs = fmt.Errorf(
+				"%w: %w %s",
+				errs, ErrAllBindingsFailedNoDefault, field,
+			)
 		}
 	}
 
@@ -154,10 +168,10 @@ func (chain *ParseChain[Source]) doStepRegular(
 }
 
 // doStepRecursive handles recursive parsing of struct fields
-func (chain *ParseChain[Source]) doStepRecursive(
-	sourceData *Source,
+func (chain *ParseChain[S]) doStepRecursive(
+	sourceData *S,
 	field reflect.Value,
-	step *ParseStep[Source],
+	step *ParseStep[S],
 ) error {
 
 	if step.SubChain == nil {
@@ -190,41 +204,61 @@ func (chain *ParseChain[Source]) doStepRecursive(
 	}
 }
 
-type ParseChainManager[Source any] struct {
-	Chains    map[reflect.Type]*ParseChain[Source] // Cache for chains. Keyed by Destination struct type.
-	ChainsMtx sync.RWMutex                         // Mutex for thread-safe access to chains
-	Opts      ParseChainManagerOpts
-	Handler   BindingHandler[Source] // Binding Handler for this source type
+// PCManager manages parse chains for different destination struct types.
+//
+// It is responsible creating, caching, retrieving, and executing parse chains
+// for a single source type. The source type is defined by the generic type
+// parameter Source, which is the type of data that will be parsed into
+// destination structs.
+//
+// The PCManager is thread-safe and can be used concurrently
+// across multiple goroutines.
+//
+// The BindingHandlerFunc is used to retrieve values from the source
+// based on the bindings defined in the parse steps. This generally will be a
+// function pointer to the BindingHandlerFunc of the BindingManager, or a closure
+// of it that injects cached values (ex. BaseMBParser's BindingHandlerAdapter).
+type PCManager[S any] struct {
+	Chains  map[reflect.Type]*ParseChain[S] // Cache for chains. Keyed by Destination struct type.
+	CMutex  sync.RWMutex                    // Mutex for thread-safe access to chains
+	Opts    PCManagerOpts                   // Options for the parse chain manager
+	Handler BindingHandlerFunc[S]           // Binding Handler for this source type
 }
 
-type ParseChainManagerOpts struct {
-	BindingOpts
+type PCManagerOpts struct {
+	tagOpts ParseTagOpts
 }
 
-func NewParseChainManager[Source any](
-	handler BindingHandler[Source],
-	opts ParseChainManagerOpts,
-) *ParseChainManager[Source] {
+func NewPCManager[S any](
+	handler BindingHandlerFunc[S],
+	opts PCManagerOpts,
+) *PCManager[S] {
 
-	return &ParseChainManager[Source]{
-		Chains:    make(map[reflect.Type]*ParseChain[Source]),
-		ChainsMtx: sync.RWMutex{},
-		Opts:      opts,
-		Handler:   handler,
+	return &PCManager[S]{
+		Chains:  make(map[reflect.Type]*ParseChain[S]),
+		CMutex:  sync.RWMutex{},
+		Opts:    opts,
+		Handler: handler,
 	}
 }
 
-func (pcMgr *ParseChainManager[Source]) GetParseChain(typ reflect.Type) (*ParseChain[Source], error) {
-	pcMgr.ChainsMtx.RLock()
-	chain, exists := pcMgr.Chains[typ]
-	pcMgr.ChainsMtx.RUnlock()
+// GetParseChain retrieves a parse chain for the given destination struct type.
+//
+// If not found, it will create a new parse chain for the type and cache it.
+func (cman *PCManager[S]) GetParseChain(
+	typ reflect.Type,
+) (*ParseChain[S], error) {
+
+	cman.CMutex.RLock()
+	chain, exists := cman.Chains[typ]
+	cman.CMutex.RUnlock()
 
 	if exists {
 		return chain, nil
 	}
 
 	// DNE. Build the chain (cached inside)
-	chain, err := pcMgr.NewParseChain(typ)
+	chain, err := cman.NewParseChain(typ)
 	if err != nil {
 		return nil, err
 	}
@@ -232,8 +266,11 @@ func (pcMgr *ParseChainManager[Source]) GetParseChain(typ reflect.Type) (*ParseC
 	return chain, nil
 }
 
-func (pcMgr *ParseChainManager[Source]) NewParseChain(typ reflect.Type) (*ParseChain[Source], error) {
-	var head, current *ParseStep[Source]
+func (cman *PCManager[S]) NewParseChain(
+	typ reflect.Type,
+) (*ParseChain[S], error) {
+
+	var head, current *ParseStep[S]
 
 	// Parse fields to build the execution chain
 	for i := 0; i < typ.NumField(); i++ {
@@ -244,42 +281,13 @@ func (pcMgr *ParseChainManager[Source]) NewParseChain(typ reflect.Type) (*ParseC
 			continue
 		}
 
-		// Check if field is a struct (excluding special types like time.Time, uuid.UUID)
-		isStruct := field.Type.Kind() == reflect.Struct && !isSpecialStructType(field.Type)
-
-		var (
-			subChain     *ParseChain[Source]
-			bindings     []Binding
-			defaultValue string
-			err          error
-		)
-
-		if isStruct {
-			// For struct fields, build a sub-chain recursively
-			subChain, err = pcMgr.NewParseChain(field.Type)
-			if err != nil {
-				return nil, fmt.Errorf("failed to build sub-chain for field %s: %w", field.Name, err)
+		step, err := cman.NewParseStep(field, i)
+		if err != nil {
+			// If no bindings, skip this field
+			if errors.Is(err, ErrNoStepBindings) {
+				continue
 			}
-			// Struct fields don't need bindings since they use sub-chains
-			bindings = []Binding{}
-		} else {
-			// For non-struct fields, parse sources as before
-			bindings, defaultValue, err = GetBindings(field, ParseTagOpts{pcMgr.Opts.BindingOpts})
-			if err != nil {
-				return nil, fmt.Errorf("failed to parse tag for field %s: %w", field.Name, err)
-			}
-			if len(bindings) == 0 {
-				continue // Skip fields with no bindings
-			}
-		}
-
-		step := &ParseStep[Source]{
-			FieldIndex:   i,
-			FieldName:    field.Name,
-			Bindings:     bindings,
-			DefaultValue: defaultValue,
-			IsStruct:     isStruct,
-			SubChain:     subChain,
+			return nil, err
 		}
 
 		if head == nil {
@@ -291,16 +299,71 @@ func (pcMgr *ParseChainManager[Source]) NewParseChain(typ reflect.Type) (*ParseC
 		}
 	}
 
-	chain := &ParseChain[Source]{
+	chain := &ParseChain[S]{
 		StructType: typ,
 		Head:       head,
-		Handler:    pcMgr.Handler,
+		Handler:    cman.Handler,
 	}
 
 	// Cache the chain
-	pcMgr.ChainsMtx.Lock()
-	pcMgr.Chains[typ] = chain
-	pcMgr.ChainsMtx.Unlock()
+	cman.CMutex.Lock()
+	cman.Chains[typ] = chain
+	cman.CMutex.Unlock()
 
 	return chain, nil
+}
+
+var ()
+
+func (cman *PCManager[S]) NewParseStep(
+	field reflect.StructField, index int,
+) (*ParseStep[S], error) {
+
+	var (
+		subChain     *ParseChain[S]
+		bindings     []Binding
+		defaultValue string
+		err          error
+		isStruct     bool = field.Type.Kind() == reflect.Struct && !isSpecialStructType(field.Type)
+		opts              = cman.Opts.tagOpts
+	)
+
+	parseTag, err := DecodeParseTagV2(field, opts)
+	if err != nil {
+		return nil, fmt.Errorf("%w %s: %w", ErrFailedToParseTag, field.Name, err)
+	}
+
+	// Handle recursive parsing
+	if parseTag.recursiveTag.Enabled {
+		if isStruct {
+			subChain, err = cman.NewParseChain(field.Type)
+			if err != nil {
+				return nil, fmt.Errorf("%w %s: %w", ErrFailedToBuildSubChain, field.Name, err)
+			}
+			// Struct fields don't need bindings since they use sub-chains
+			bindings = []Binding{}
+		}
+	} else {
+		// Handle nonrecursive parsing
+		bindings, err = makeBindings(parseTag, opts)
+		if err != nil {
+			return nil, err
+		}
+
+		if len(bindings) == 0 {
+			return nil, ErrNoStepBindings
+		}
+
+		defaultValue = parseTag.defaultTag.Value
+	}
+
+	return &ParseStep[S]{
+		FieldIndex:    index,
+		FieldName:     field.Name,
+		Bindings:      bindings,
+		DefaultValue:  defaultValue,
+		IsStruct:      isStruct,
+		SubChain:      subChain,
+		ShouldRecurse: parseTag.recursiveTag.Enabled,
+	}, nil
 }

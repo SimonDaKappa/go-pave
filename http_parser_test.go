@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/url"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -15,27 +16,27 @@ import (
 
 // Test struct for various HTTP parsing scenarios
 type TestStruct struct {
-	Name        string `parse:"json:'name'"`
-	Age         int    `parse:"json:'age'"`
-	Email       string `parse:"json:'email'"`
-	OptionalVal string `parse:"json:'optional,omitempty' default:'10'"`
-	Page        int    `parse:"query:'page'"`
-	Limit       int    `parse:"query:'limit,omitempty' default:'10'"`
-	SessionID   string `parse:"cookie:'session_id'"`
-	AuthToken   string `parse:"header:'Authorization'"`
-	UserAgent   string `parse:"header:'User-Agent,omitempty' default:'10'"`
+	Name        string `json:"name"`
+	Age         int    `json:"age"`
+	Email       string `json:"email"`
+	OptionalVal string `json:"optional,omitempty" default:"10"`
+	Page        int    `query:"page"`
+	Limit       int    `query:"limit,omitempty" default:"10"`
+	SessionID   string `cookie:"session_id"`
+	AuthToken   string `header:"Authorization"`
+	UserAgent   string `header:"User-Agent,omitempty" default:"10"`
 }
 
 // Test struct for benchmarking
 type BenchStruct struct {
-	ID            string `parse:"json:'id'"`
-	Name          string `parse:"json:'name'"`
-	Email         string `parse:"json:'email'"`
-	AuthHeader    string `parse:"header:'Authorization'"`
-	UserAgent     string `parse:"header:'User-Agent'"`
-	SessionCookie string `parse:"cookie:'session'"`
-	Page          int    `parse:"query:'page'"`
-	Size          int    `parse:"query:'size'"`
+	ID            string `json:"id"`
+	Name          string `json:"name"`
+	Email         string `json:"email"`
+	AuthHeader    string `header:"Authorization"`
+	UserAgent     string `header:"User-Agent"`
+	SessionCookie string `cookie:"session"`
+	Page          int    `query:"page"`
+	Size          int    `query:"size"`
 }
 
 // createTestRequest creates an HTTP request with all types of data for testing
@@ -89,9 +90,37 @@ func createBenchRequest() *http.Request {
 	return req
 }
 
-// createEmptyRequest creates an HTTP request with minimal data
-func createEmptyRequest() *http.Request {
-	req, _ := http.NewRequest("GET", "http://example.com/", nil)
+func createBenchRequestRandomized() *http.Request {
+
+	benchId := fmt.Sprintf("bench%d", time.Now().UnixNano())
+	benchName := fmt.Sprintf("Benchmark User %d", time.Now().UnixNano()%1000)
+	benchEmail := fmt.Sprintf("bench%d@example.com", time.Now().UnixNano()%1000)
+	benchPage := time.Now().UnixNano() % 100
+	benchSize := time.Now().UnixNano() % 50
+	benchToken := fmt.Sprintf("benchtoken%d", time.Now().UnixNano()%1000)
+	benchSession := fmt.Sprintf("sess%d", time.Now().UnixNano()%1000)
+
+	// JSON body for benchmarking
+	jsonBody := `{
+		"id": "` + benchId + `",
+		"name": "` + benchName + `",
+		"email": "` + benchEmail + `"
+	}`
+
+	query := url.Values{}
+	query.Set("page", fmt.Sprintf("%d", benchPage))
+	query.Set("size", fmt.Sprintf("%d", benchSize))
+
+	req, _ := http.NewRequest(
+		"POST",
+		"http://example.com/api?"+query.Encode(),
+		bytes.NewBufferString(jsonBody),
+	)
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Authorization", "Bearer "+benchToken)
+	req.Header.Set("User-Agent", "BenchmarkAgent/1.0")
+	req.AddCookie(&http.Cookie{Name: "session", Value: benchSession})
+
 	return req
 }
 
@@ -149,7 +178,7 @@ func TestHTTPRequestParser_EmptyJSONBody(t *testing.T) {
 	parser := NewHTTPRequestParser()
 
 	type EmptyStruct struct {
-		Name string `parse:"json:'name,omitempty' default:'johndoe12312'"`
+		Name string `json:"name,omitempty" default:"johndoe12312"`
 	}
 
 	// Test with empty body
@@ -165,7 +194,7 @@ func TestHTTPRequestParser_InvalidJSON(t *testing.T) {
 	parser := NewHTTPRequestParser()
 
 	type JSONStruct struct {
-		Name string `parse:"json:'name'"`
+		Name string `json:"name"`
 	}
 
 	// Test with invalid JSON
@@ -183,7 +212,7 @@ func TestHTTPRequestParser_MissingRequiredField(t *testing.T) {
 	parser := NewHTTPRequestParser()
 
 	type RequiredStruct struct {
-		Name string `parse:"json:'name,required'"`
+		Name string `json:"name"`
 	}
 
 	// Test with missing required field
@@ -201,8 +230,8 @@ func TestHTTPRequestParser_OmitEmptyModifier(t *testing.T) {
 	parser := NewHTTPRequestParser()
 
 	type OmitEmptyStruct struct {
-		Name  string `parse:"json:'name,omitempty'"`
-		Email string `parse:"json:'email,omitempty'"`
+		Name  string `json:"name,omitempty"`
+		Email string `json:"email,omitempty"`
 	}
 
 	// Test with empty values
@@ -222,7 +251,7 @@ func TestHTTPRequestParser_OmitNilModifier(t *testing.T) {
 	parser := NewHTTPRequestParser()
 
 	type OmitNilStruct struct {
-		OptionalVal string `parse:"json:'optional,omitnil' default:'default value'"`
+		OptionalVal string `json:"optional,omitnil" default:"default value"`
 	}
 
 	// Test with null value in JSON
@@ -240,9 +269,9 @@ func TestHTTPRequestParser_MultipleHeaders(t *testing.T) {
 	parser := NewHTTPRequestParser()
 
 	type MultiHeaderStruct struct {
-		Accept      string `parse:"header:'Accept'"`
-		ContentType string `parse:"header:'Content-Type'"`
-		Custom      string `parse:"header:'X-Custom-Header'"`
+		Accept      string `header:"Accept"`
+		ContentType string `header:"Content-Type"`
+		Custom      string `header:"X-Custom-Header"`
 	}
 
 	req, _ := http.NewRequest("GET", "http://example.com/", nil)
@@ -263,9 +292,9 @@ func TestHTTPRequestParser_MultipleCookies(t *testing.T) {
 	parser := NewHTTPRequestParser()
 
 	type MultiCookieStruct struct {
-		Session     string `parse:"cookie:'session'"`
-		Preferences string `parse:"cookie:'prefs'"`
-		TrackingID  string `parse:"cookie:'tracking'"`
+		Session     string `cookie:"session"`
+		Preferences string `cookie:"prefs"`
+		TrackingID  string `cookie:"tracking"`
 	}
 
 	req, _ := http.NewRequest("GET", "http://example.com/", nil)
@@ -286,10 +315,10 @@ func TestHTTPRequestParser_ComplexQueryParams(t *testing.T) {
 	parser := NewHTTPRequestParser()
 
 	type QueryStruct struct {
-		Page   int    `parse:"query:'page'"`
-		Size   int    `parse:"query:'size'"`
-		Tags   string `parse:"query:'tags'"`
-		Filter string `parse:"query:'filter'"`
+		Page   int    `query:"page"`
+		Size   int    `query:"size"`
+		Tags   string `query:"tags"`
+		Filter string `query:"filter"`
 	}
 
 	// Create URL with complex query parameters
@@ -315,10 +344,10 @@ func TestHTTPRequestParser_NestedJSONStructure(t *testing.T) {
 	parser := NewHTTPRequestParser()
 
 	type NestedStruct struct {
-		UserName    string `parse:"json:'user.name'"`
-		UserEmail   string `parse:"json:'user.email'"`
-		CompanyName string `parse:"json:'company.name'"`
-		CompanyID   int    `parse:"json:'company.id'"`
+		UserName    string `json:"user.name"`
+		UserEmail   string `json:"user.email"`
+		CompanyName string `json:"company.name"`
+		CompanyID   int    `json:"company.id"`
 	}
 
 	jsonBody := `{
@@ -351,7 +380,7 @@ func TestHTTPRequestParser_InvalidTagBinding(t *testing.T) {
 	parser := NewHTTPRequestParser()
 
 	type InvalidStruct struct {
-		Value string `parse:"invalidbinding:'test'"`
+		Value string `invalidbinding:"test"`
 	}
 
 	req := createTestRequest()
@@ -359,8 +388,8 @@ func TestHTTPRequestParser_InvalidTagBinding(t *testing.T) {
 	err := parser.Parse(req, &result)
 
 	assert.Error(t, err)
-	if !errors.Is(err, ErrUnallowedBindingName) {
-		t.Errorf("Expected ErrUnallowedBindingName, got %v", err)
+	if !errors.Is(err, ErrNilParseChain) {
+		t.Errorf("Expected ErrNilParseChain, got %v", err)
 	}
 }
 
@@ -369,8 +398,8 @@ func TestHTTPRequestParser_UnexpectedModifiers(t *testing.T) {
 
 	// Test with custom modifiers that shouldn't affect parsing
 	type ModifierStruct struct {
-		Name  string `parse:"json:'name,custommodifier'"`
-		Email string `parse:"json:'email,anothercustom,omitempty'"`
+		Name  string `json:"name,custommodifier"`
+		Email string `json:"email,anothercustom,omitempty"`
 	}
 
 	req := createTestRequest()
@@ -386,10 +415,10 @@ func TestHTTPRequestParser_EmptyIdentifiers(t *testing.T) {
 	parser := NewHTTPRequestParser()
 
 	type EmptyIdentifierStruct struct {
-		Header string `parse:"header:''"`
-		Cookie string `parse:"cookie:''"`
-		Query  string `parse:"query:''"`
-		JSON   string `parse:"json:''"`
+		Header string `header:""`
+		Cookie string `cookie:""`
+		Query  string `query:""`
+		JSON   string `json:""`
 	}
 
 	req := createTestRequest()
@@ -444,10 +473,10 @@ func BenchmarkHTTPRequestParser_JSONParsing(b *testing.B) {
 	parser := NewHTTPRequestParser()
 
 	type JSONOnlyStruct struct {
-		ID    string `parse:"json:'id'"`
-		Name  string `parse:"json:'name'"`
-		Email string `parse:"json:'email'"`
-		Age   int    `parse:"json:'age'"`
+		ID    string `json:"id"`
+		Name  string `json:"name"`
+		Email string `json:"email"`
+		Age   int    `json:"age"`
 	}
 
 	jsonBody := `{
@@ -476,10 +505,10 @@ func BenchmarkHTTPRequestParser_HeaderParsing(b *testing.B) {
 	parser := NewHTTPRequestParser()
 
 	type HeaderOnlyStruct struct {
-		Auth      string `parse:"header:'Authorization'"`
-		UserAgent string `parse:"header:'User-Agent'"`
-		Accept    string `parse:"header:'Accept'"`
-		Host      string `parse:"header:'Host'"`
+		Auth      string `header:"Authorization"`
+		UserAgent string `header:"User-Agent"`
+		Accept    string `header:"Accept"`
+		Host      string `header:"Host"`
 	}
 
 	req, _ := http.NewRequest("GET", "http://example.com/", nil)
@@ -503,8 +532,8 @@ func BenchmarkHTTPRequestParser_CookieParsing(b *testing.B) {
 	parser := NewHTTPRequestParser()
 
 	type CookieOnlyStruct struct {
-		SessionID string `parse:"cookie:'session_id'"`
-		Theme     string `parse:"cookie:'theme'"`
+		SessionID string `cookie:"session_id"`
+		Theme     string `cookie:"theme"`
 	}
 
 	req, _ := http.NewRequest("GET", "http://example.com/", nil)
@@ -525,9 +554,9 @@ func BenchmarkHTTPRequestParser_QueryParsing(b *testing.B) {
 	parser := NewHTTPRequestParser()
 
 	type QueryOnlyStruct struct {
-		Page  int    `parse:"query:'page'"`
-		Limit int    `parse:"query:'limit'"`
-		Sort  string `parse:"query:'sort'"`
+		Page  int    `query:"page"`
+		Limit int    `query:"limit"`
+		Sort  string `query:"sort"`
 	}
 
 	queryStr := url.Values{}
@@ -577,7 +606,7 @@ func TestHTTPRequestParser_LargeJSONBody(t *testing.T) {
 	parser := NewHTTPRequestParser()
 
 	type LargeStruct struct {
-		Data string `parse:"json:'data'"`
+		Data string `json:"data"`
 	}
 
 	// Create a large JSON payload
@@ -595,15 +624,14 @@ func TestHTTPRequestParser_LargeJSONBody(t *testing.T) {
 	assert.Equal(t, largeData, result.Data)
 }
 
-// TODO $$$SIMON FIX
 // func TestHTTPRequestParser_SpecialCharactersInValues(t *testing.T) {
 // 	parser := NewHTTPRequestParser()
 
 // 	type SpecialCharsStruct struct {
-// 		JSONField   string `parse:"json:'special'"`
-// 		HeaderField string `parse:"header:'X-Special'"`
-// 		CookieField string `parse:"cookie:'special'"`
-// 		QueryField  string `parse:"query:'special'"`
+// 		JSONField   string `json:"special"`
+// 		HeaderField string `header:"X-Special"`
+// 		CookieField string `cookie:"special"`
+// 		QueryField  string `query:"special"`
 // 	}
 
 // 	specialValue := `{"nested": "value with spaces & symbols !@#$%^&*()"}`
@@ -670,4 +698,108 @@ func TestHTTPRequestParser_BenchmarkParseChainCache(t *testing.T) {
 	fmt.Printf("Average time with cache disabled: %v\n", avgCacheDisabled)
 	fmt.Printf("Average time with cache enabled: %v\n", avgCacheEnabled)
 	assert.Less(t, avgCacheEnabled, avgCacheDisabled, "Cache should improve performance")
+}
+
+func BenchmarkHTTPRequestParser_NewParseChain(b *testing.B) {
+
+	type smallSBStruct struct {
+		ID    string `json:"id"`
+		Name  string `json:"name"`
+		Email string `json:"email"`
+	}
+
+	type mediumSBStruct struct {
+		smallSBStruct
+		AuthHeader    string `header:"Authorization"`
+		UserAgent     string `header:"User-Agent"`
+		SessionCookie string `cookie:"session"`
+		Page          int    `query:"page"`
+		Size          int    `query:"size"`
+	}
+
+	type largeSBStruct struct {
+		mediumSBStruct
+		Address     string `json:"address"`
+		PhoneNumber string `json:"phone_number"`
+		Preferences string `json:"preferences"`
+	}
+
+	type smallMBStruct struct {
+		ID    string `json:"id" cookie:"id" header:"id" query:"id"`
+		Name  string `json:"name" cookie:"name" header:"name" query:"name"`
+		Email string `json:"email" cookie:"email" header:"email" query:"email"`
+	}
+
+	type mediumMBStruct struct {
+		smallMBStruct
+		AuthHeader string `header:"Authorization"`
+		UserAgent  string `header:"User-Agent" query:"user_agent"`
+	}
+
+	type smallOptStruct struct {
+		ID    string `json:"id,omitempty" default:"default_id"`
+		Name  string `json:"name,omitempty" default:"default_name"`
+		Email string `json:"email,omitempty" default:"default_email"`
+	}
+
+	type mediumOptStruct struct {
+		smallOptStruct
+		AuthHeader string `header:"Authorization,omitempty,omiterror,omitnil" default:"default_auth"`
+		UserAgent  string `header:"User-Agent,omitempty,omiterror,omitnil" default:"default_user_agent"`
+		SessionID  string `cookie:"session_id,omitempty,omiterror,omitnil" default:"default_session"`
+		Page       int    `query:"page,omitempty,omiterror,omitnil" default:"1"`
+		Limit      int    `query:"limit,omitempty,omiterror,omitnil" default:"10"`
+	}
+
+	f := func(source *http.Request, binding Binding) BindingResult { return BindingResultValue("") }
+	pcm := NewPCManager[http.Request](f, _httpPCMOpts)
+
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		// Small struct
+		_, err := pcm.NewParseChain(reflect.TypeOf(smallSBStruct{}))
+		assert.NoError(b, err)
+	}
+
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		// Medium struct
+		_, err := pcm.NewParseChain(reflect.TypeOf(mediumSBStruct{}))
+		assert.NoError(b, err)
+	}
+
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		// Large struct
+		_, err := pcm.NewParseChain(reflect.TypeOf(largeSBStruct{}))
+		assert.NoError(b, err)
+	}
+
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		// Small multi-binding struct
+		_, err := pcm.NewParseChain(reflect.TypeOf(smallMBStruct{}))
+		assert.NoError(b, err)
+	}
+
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		// Medium multi-binding struct
+		_, err := pcm.NewParseChain(reflect.TypeOf(mediumMBStruct{}))
+		assert.NoError(b, err)
+	}
+
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		// Small optional struct
+		_, err := pcm.NewParseChain(reflect.TypeOf(smallOptStruct{}))
+		assert.NoError(b, err)
+	}
+
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		// Medium optional struct
+		_, err := pcm.NewParseChain(reflect.TypeOf(mediumOptStruct{}))
+		assert.NoError(b, err)
+	}
 }

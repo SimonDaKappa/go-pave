@@ -12,19 +12,22 @@ import (
 
 var (
 	// Default HTTPRequestParser Binding Options
-	_httpBindingOpts = BindingOpts{
-		AllowedBindingNames: []string{
-			JsonTagBinding,
-			CookieTagBinding,
-			HeaderTagBinding,
-			QueryTagBinding,
+	_httpTagOpts = ParseTagOpts{
+		BindingOpts: BindingOpts{
+			AllowedBindingNames: []string{
+				JsonTagBinding,
+				CookieTagBinding,
+				HeaderTagBinding,
+				QueryTagBinding,
+			},
+			CustomBindingModifiers: []string{},
 		},
-		CustomBindingModifiers: []string{},
+		AllowedTagOptionals: []string{},
 	}
 
 	// Default HTTPRequestParser ParseChainManager Options
-	_httpPCMOpts = ParseChainManagerOpts{
-		BindingOpts: _httpBindingOpts,
+	_httpPCMOpts = PCManagerOpts{
+		tagOpts: _httpTagOpts,
 	}
 
 	// Default HTTPRequestParser Options
@@ -44,26 +47,26 @@ var (
 //     field bindings
 //
 // The following Field Bindings are supported:
-//   - `json:<key>`: Parses a JSON key from the request body
-//   - `cookie:<key>`: Parses a cookie value by key
-//   - `header:<key>`: Parses a header value by key
-//   - `query:<key>`: Parses a query parameter value by key
+//   - json:'<key,[modifiers]>'`: Parses a JSON key from the request body
+//   - cookie:'<key,[modifiers]>'`: Parses a cookie value by key
+//   - header:'<key,[modifiers]>'`: Parses a header value by key
+//   - query:'<key,[modifiers]>'`: Parses a query parameter value by key
 //
 // Like all other MultiBindingParsers, this parser caches the
 // parsing strategy (ParseChain) for each destination type, so
 // that only the first parse takes the time to build the chain,
 // and subsequent parses simply execute the pre-built chain.
 //
-// This parser expects the standard parse tag format.
+// This parser expects the standard parse tag format. See: [tags.go](./tags.go)
 //
 // This parser does not support any custom modifiers, but it does
-// support all standard modifiers (required, omitempty, omitnil, omiterr)
+// support all standard modifiers (required, omitempty, omitnil, omiterror).
 type HTTPRequestParser struct {
 	*BaseMBParser[http.Request, HTTPRequestOnce]
 }
 
 func NewHTTPRequestParser() *HTTPRequestParser {
-	base := NewBaseMBParser[http.Request, HTTPRequestOnce](
+	base := NewBaseMBParser(
 		NewHTTPBindingManager(),
 		_httpParserOpts,
 	)
@@ -87,10 +90,10 @@ func (mgr *HTTPBindingManager) BindingHandlerCached(
 	source *http.Request,
 	entry *CacheEntry[HTTPRequestOnce],
 	binding Binding,
-) (any, bool, error) {
+) BindingResult {
 
 	if entry == nil {
-		return nil, false, ErrBindingCacheNilEntry
+		return BindingResultError(ErrBindingCacheNilEntry)
 	}
 
 	switch binding.Name {
@@ -103,29 +106,27 @@ func (mgr *HTTPBindingManager) BindingHandlerCached(
 	case QueryTagBinding:
 		return mgr.QueryValue(source, entry, binding.Identifier)
 	default:
-		return nil, false, fmt.Errorf("unknown binding: %s", binding.Name)
+		return BindingResultError(fmt.Errorf("unknown binding: %s", binding.Name))
 	}
 }
 
 func (mgr *HTTPBindingManager) BindingHandler(
 	source *http.Request,
 	binding Binding,
-) (any, bool, error) {
+) BindingResult {
 
 	// This should be fine. We onyl allow instances of HTTBindingManager to be
 	// created by the HTTPRequestParser, which always uses the cache.
-	return nil, false, fmt.Errorf("uncached handler not implemented for HTTPBindingManager")
+	return BindingResultError(fmt.Errorf("uncached handler not implemented for HTTPBindingManager"))
 }
 
-func (hp *HTTPBindingManager) NewCached() HTTPRequestOnce {
+func (mgr *HTTPBindingManager) NewCached() HTTPRequestOnce {
 	return NewHTTPRequestOnce()
 }
 
-func (hp *HTTPBindingManager) JSONValue(
-	source *http.Request,
-	entry *CacheEntry[HTTPRequestOnce],
-	key string,
-) (any, bool, error) {
+func (mgr *HTTPBindingManager) JSONValue(
+	source *http.Request, entry *CacheEntry[HTTPRequestOnce], key string,
+) BindingResult {
 
 	var jsonBody gjson.Result
 	var err error
@@ -158,22 +159,20 @@ func (hp *HTTPBindingManager) JSONValue(
 	})
 
 	if err != nil {
-		return nil, false, err
+		return BindingResultError(err)
 	}
 
 	result := jsonBody.Get(key)
 	if !result.Exists() {
-		return nil, false, nil
+		return BindingResultNotFound()
 	}
 
-	return result.Value(), true, nil
+	return BindingResultValue(result.Value())
 }
 
-func (hp *HTTPBindingManager) CookieValue(
-	source *http.Request,
-	entry *CacheEntry[HTTPRequestOnce],
-	key string,
-) (any, bool, error) {
+func (mgr *HTTPBindingManager) CookieValue(
+	source *http.Request, entry *CacheEntry[HTTPRequestOnce], key string,
+) BindingResult {
 
 	var cookies map[string]*http.Cookie
 
@@ -189,17 +188,15 @@ func (hp *HTTPBindingManager) CookieValue(
 
 	cookie, exists := cookies[key]
 	if !exists {
-		return nil, false, nil
+		return BindingResultNotFound()
 	}
 
-	return cookie.Value, true, nil
+	return BindingResultValue(cookie.Value)
 }
 
-func (hp *HTTPBindingManager) HeaderValue(
-	source *http.Request,
-	entry *CacheEntry[HTTPRequestOnce],
-	key string,
-) (any, bool, error) {
+func (mgr *HTTPBindingManager) HeaderValue(
+	source *http.Request, entry *CacheEntry[HTTPRequestOnce], key string,
+) BindingResult {
 
 	var headers map[string]string
 
@@ -217,17 +214,15 @@ func (hp *HTTPBindingManager) HeaderValue(
 
 	value, exists := headers[key]
 	if !exists || value == "" {
-		return nil, false, nil
+		return BindingResultNotFound()
 	}
 
-	return value, true, nil
+	return BindingResultValue(value)
 }
 
-func (hp *HTTPBindingManager) QueryValue(
-	source *http.Request,
-	entry *CacheEntry[HTTPRequestOnce],
-	key string,
-) (any, bool, error) {
+func (mgr *HTTPBindingManager) QueryValue(
+	source *http.Request, entry *CacheEntry[HTTPRequestOnce], key string,
+) BindingResult {
 
 	var queryParams map[string][]string
 
@@ -240,9 +235,9 @@ func (hp *HTTPBindingManager) QueryValue(
 
 	values, exists := queryParams[key]
 	if !exists || len(values) == 0 {
-		return nil, false, nil
+		return BindingResultNotFound()
 	}
-	return values[0], true, nil
+	return BindingResultValue(values[0])
 }
 
 // HTTPRequestOnce holds parsed HTTP request data to avoid re-parsing
