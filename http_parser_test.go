@@ -469,6 +469,27 @@ func BenchmarkHTTPRequestParser_CachedParsing(b *testing.B) {
 	}
 }
 
+func TestHTTPRequestParser_CachedParsingSpeed(t *testing.T) {
+	parser := NewHTTPRequestParser()
+
+	// Measure parsing time
+	avg_time := 0.0
+	iter_count := 100000
+	for i := 0; i < iter_count; i++ {
+		var result BenchStruct
+		req := createBenchRequest()
+		start := time.Now()
+		err := parser.Parse(req, &result)
+		if err != nil {
+			t.Fatal(err)
+		}
+		t2 := time.Now()
+		avg_time += t2.Sub(start).Seconds()
+	}
+	avg_time /= float64(iter_count)
+	fmt.Printf("Average parsing time for 100000 iterations: %v seconds\n", avg_time)
+}
+
 func BenchmarkHTTPRequestParser_JSONParsing(b *testing.B) {
 	parser := NewHTTPRequestParser()
 

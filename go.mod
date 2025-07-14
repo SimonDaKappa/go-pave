@@ -1,4 +1,4 @@
-module github.com/SimonDaKappa/go-pave.git
+module github.com/SimonDaKappa/go-pave
 
 go 1.24.0
 
