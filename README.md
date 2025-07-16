@@ -67,7 +67,7 @@ To determine which one to use, see the documentation for the parser you want
 
 ###  Tag Grammar
 
-```md
+```
 Tag grammar:
     <field> <type> <tag>
 field:

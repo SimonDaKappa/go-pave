@@ -1,0 +1,76 @@
+run:
+  timeout: 5m
+  go: "1.24"
+
+linters-settings:
+  gocyclo:
+    min-complexity: 15
+  
+  golint:
+    min-confidence: 0
+  
+  govet:
+    check-shadowing: true
+  
+  gofmt:
+    simplify: true
+  
+  goimports:
+    local-prefixes: github.com/SimonDaKappa/go-pave
+  
+  goconst:
+    min-len: 2
+    min-occurrences: 2
+  
+  misspell:
+    locale: US
+  
+  lll:
+    line-length: 120
+
+linters:
+  enable:
+    - bodyclose
+    - deadcode
+    - errcheck
+    - gocyclo
+    - goconst
+    - gofmt
+    - goimports
+    - golint
+    - gosimple
+    - govet
+    - ineffassign
+    - lll
+    - misspell
+    - staticcheck
+    - structcheck
+    - typecheck
+    - unconvert
+    - unparam
+    - unused
+    - varcheck
+
+issues:
+  exclude-use-default: false
+  exclude:
+    # Exclude some linters from running on tests files
+    - path: _test\.go
+      linters:
+        - gocyclo
+        - errcheck
+        - dupl
+        - gosec
+    
+    # Exclude known linter issues
+    - text: "weak cryptographic primitive"
+      linters:
+        - gosec
+    
+    # Exclude issues with vendored code
+    - path: vendor/
+      linters:
+        - gomnd
+        - gocritic
+        - gochecknoglobals
+        - gochecknoinits
