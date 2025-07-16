@@ -3,7 +3,6 @@ package pave
 import (
 	"errors"
 	"sync"
-	"unsafe"
 )
 
 var (
@@ -31,52 +30,48 @@ func NewBindingCache[S any, C any]() *BindingCache[S, C] {
 	}
 }
 
-// getSourceKey generates a unique key for the source instance using its memory address
-func (bc *BindingCache[S, C]) getSourceKey(source *S) uintptr {
-	return uintptr(unsafe.Pointer(source))
-}
-
 // GetOrCreate returns the cache entry for the source, creating one if it doesn't exist.
 // The factory function is called only once per source instance, even under concurrent access.
-func (bc *BindingCache[S, C]) GetOrCreate(source *S, new func() C) *CacheEntry[C] {
-	key := bc.getSourceKey(source)
-
+func (bc *BindingCache[S, C]) GetOrCreate(source *S, factory func() C) *CacheEntry[C] {
 	// Try to load existing entry
-	if entry, ok := bc.cache.Load(key); ok {
-		return entry.(*CacheEntry[C])
+	if v, ok := bc.cache.Load(source); ok {
+		return v.(*CacheEntry[C])
 	}
 
-	// Create new entry
-	newEntry := &CacheEntry[C]{
-		data: new(),
+	// Create new entry without calling factory yet
+	newEntry := &CacheEntry[C]{}
+
+	// LoadOrStore returns the actual stored value
+	actual, loaded := bc.cache.LoadOrStore(source, newEntry)
+	entry := actual.(*CacheEntry[C])
+
+	// If we stored our new entry, initialize it
+	if !loaded {
+		entry.mutex.Lock()
+		entry.data = factory()
+		entry.mutex.Unlock()
 	}
 
-	// Store and return the entry that was actually stored
-	actual, _ := bc.cache.LoadOrStore(key, newEntry)
-	return actual.(*CacheEntry[C])
+	return entry
 }
 
 // Get retrieves the cache entry for the source if it exists
 func (bc *BindingCache[S, C]) Get(source *S) (*CacheEntry[C], bool) {
-	key := bc.getSourceKey(source)
-	if entry, ok := bc.cache.Load(key); ok {
-		return entry.(*CacheEntry[C]), true
+	if v, ok := bc.cache.Load(source); ok {
+		return v.(*CacheEntry[C]), true
 	}
 	return nil, false
 }
 
 // Delete removes the cache entry for the source
 func (bc *BindingCache[S, C]) Delete(source *S) {
-	key := bc.getSourceKey(source)
-	bc.cache.Delete(key)
+	bc.cache.Delete(source)
 }
 
 // Clear removes all cache entries
 func (bc *BindingCache[S, C]) Clear() {
-	bc.cache.Range(func(key, value interface{}) bool {
-		bc.cache.Delete(key)
-		return true
-	})
+	// Create a new map instead of iterating
+	bc.cache = sync.Map{}
 }
 
 // ReadData provides read access to the cached data

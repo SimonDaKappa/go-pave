@@ -773,7 +773,7 @@ func BenchmarkHTTPRequestParser_NewParseChain(b *testing.B) {
 	}
 
 	f := func(source *http.Request, binding Binding) BindingResult { return BindingResultValue("") }
-	pcm := NewPCManager[http.Request](f, _httpPCMOpts)
+	pcm := NewPCManager(f, _httpPCMOpts)
 
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
@@ -823,4 +823,115 @@ func BenchmarkHTTPRequestParser_NewParseChain(b *testing.B) {
 		_, err := pcm.NewParseChain(reflect.TypeOf(mediumOptStruct{}))
 		assert.NoError(b, err)
 	}
+}
+
+// Test for uncovered HTTP parser methods
+func TestHTTPBindingManager_BindingHandler_NotImplemented(t *testing.T) {
+	mgr := NewHTTPBindingManager()
+	req := createTestRequest()
+	binding := Binding{Name: JsonTagBinding, Identifier: "name"}
+
+	result := mgr.BindingHandler(req, binding)
+	assert.False(t, result.Found)
+	assert.Error(t, result.Error)
+	assert.Contains(t, result.Error.Error(), "uncached handler not implemented")
+}
+
+func TestHTTPBindingManager_BindingHandlerCached_NilEntry(t *testing.T) {
+	mgr := NewHTTPBindingManager()
+	req := createTestRequest()
+	binding := Binding{Name: JsonTagBinding, Identifier: "name"}
+
+	result := mgr.BindingHandlerCached(req, nil, binding)
+	assert.False(t, result.Found)
+	assert.Error(t, result.Error)
+	assert.Equal(t, ErrBindingCacheNilEntry, result.Error)
+}
+
+func TestHTTPBindingManager_BindingHandlerCached_UnknownBinding(t *testing.T) {
+	mgr := NewHTTPBindingManager()
+	req := createTestRequest()
+	binding := Binding{Name: "unknown", Identifier: "name"}
+
+	cache := NewBindingCache[http.Request, HTTPRequestOnce]()
+	entry := cache.GetOrCreate(req, func() HTTPRequestOnce {
+		return NewHTTPRequestOnce()
+	})
+
+	result := mgr.BindingHandlerCached(req, entry, binding)
+	assert.False(t, result.Found)
+	assert.Error(t, result.Error)
+	assert.Contains(t, result.Error.Error(), "unknown binding")
+}
+
+func TestHTTPBindingManager_JSONValue_EmptyBody(t *testing.T) {
+	mgr := NewHTTPBindingManager()
+	req, _ := http.NewRequest("POST", "/test", bytes.NewReader([]byte{}))
+	req.Header.Set("Content-Type", "application/json")
+
+	cache := NewBindingCache[http.Request, HTTPRequestOnce]()
+	entry := cache.GetOrCreate(req, func() HTTPRequestOnce {
+		return NewHTTPRequestOnce()
+	})
+
+	result := mgr.JSONValue(req, entry, "nonexistent")
+	assert.False(t, result.Found)
+	assert.Nil(t, result.Error)
+}
+
+func TestHTTPBindingManager_JSONValue_NilBody(t *testing.T) {
+	mgr := NewHTTPBindingManager()
+	req, _ := http.NewRequest("POST", "/test", nil)
+	req.Header.Set("Content-Type", "application/json")
+
+	cache := NewBindingCache[http.Request, HTTPRequestOnce]()
+	entry := cache.GetOrCreate(req, func() HTTPRequestOnce {
+		return NewHTTPRequestOnce()
+	})
+
+	result := mgr.JSONValue(req, entry, "nonexistent")
+	assert.False(t, result.Found)
+	assert.Nil(t, result.Error)
+}
+
+func TestHTTPBindingManager_CookieValue_NotFound(t *testing.T) {
+	mgr := NewHTTPBindingManager()
+	req, _ := http.NewRequest("GET", "/test", nil)
+
+	cache := NewBindingCache[http.Request, HTTPRequestOnce]()
+	entry := cache.GetOrCreate(req, func() HTTPRequestOnce {
+		return NewHTTPRequestOnce()
+	})
+
+	result := mgr.CookieValue(req, entry, "nonexistent")
+	assert.False(t, result.Found)
+	assert.Nil(t, result.Error)
+}
+
+func TestHTTPBindingManager_HeaderValue_NotFound(t *testing.T) {
+	mgr := NewHTTPBindingManager()
+	req, _ := http.NewRequest("GET", "/test", nil)
+
+	cache := NewBindingCache[http.Request, HTTPRequestOnce]()
+	entry := cache.GetOrCreate(req, func() HTTPRequestOnce {
+		return NewHTTPRequestOnce()
+	})
+
+	result := mgr.HeaderValue(req, entry, "nonexistent")
+	assert.False(t, result.Found)
+	assert.Nil(t, result.Error)
+}
+
+func TestHTTPBindingManager_QueryValue_NotFound(t *testing.T) {
+	mgr := NewHTTPBindingManager()
+	req, _ := http.NewRequest("GET", "/test", nil)
+
+	cache := NewBindingCache[http.Request, HTTPRequestOnce]()
+	entry := cache.GetOrCreate(req, func() HTTPRequestOnce {
+		return NewHTTPRequestOnce()
+	})
+
+	result := mgr.QueryValue(req, entry, "nonexistent")
+	assert.False(t, result.Found)
+	assert.Nil(t, result.Error)
 }
