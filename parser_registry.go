@@ -183,9 +183,7 @@ func (reg *ParserRegistry) Parse(source any, dest any, validate bool) error {
 //
 // If no parser is found, it returns ErrNoParser.
 func (reg *ParserRegistry) tryGetDefaultParser(source any) (Parser, error) {
-	typ := reflect.TypeOf(source)
-
-	parser, err := reg.getParserByName(typ, "")
+	parser, err := reg.getParserByName(source, "")
 	if err != nil {
 		return nil, err
 	}

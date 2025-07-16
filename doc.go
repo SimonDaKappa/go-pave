@@ -27,9 +27,9 @@
 // validate the struct's fields after they have been populated by the parsers.
 //
 // Custom parser come in two flavors:
-//   - OneShotSourceParser: Parses from a single source type, such as a byte slice
-//     or a string. It is used when the source is expected to be a single value.
-//     These parsers do not support multiple sources for a single field.
+//   - OneShotSourceParser: Parses from a source type with a single binding,
+//     such as a byte slice or a string. It is used when the source is expected
+//     to be a single value.
 //   - MultipleSourceParser: Parses from sources with multiple interaction methods,
 //     such as a HTTP request. These parsers build a ParseExecutionChain (see
 //     [parseChainBuilder](https://pkg.go.dev/pave#ChainExecutor) and
@@ -41,16 +41,6 @@
 //
 // All parsers must implement the [Parser](https://pkg.go.dev/pave#SourceParser) interface,
 // which defines the methods required for parsing data from a source into a Validatable type.
-//
-// All parsers must also support the following source tag modifiers:
-//   - `omitempty`: If the field is empty, it will not be parsed. If a fallback source
-//     is specified, an attempt to use it instead will be made.
-//   - `required`: The field must be present in the source, otherwise an
-//     error will be returned. The first instance of `required` as a tag modifier
-//     will cut the generation of the parse execution chain. That is, all `omitempty`
-//     tags after the first `required` will be ignored, and the field will be required
-//     to be present in the source. `required` is IMPLIED by default. At most one `required`
-//     modifier can be present per field.
 package pave
 
 /**
@@ -62,12 +52,12 @@ PLANNING:
     2. Must be able to validate for Validatable or for types that can possibly be converted to Validatable by boxing them
     3. Build Tags for enabling integrations/featureflags
 - Formalize tag grammar, create generic tag parser for MultiStepSourceParser and OneShotSourceParser (DONE)
-    - Tag grammar shown below.
+    - Tag grammar shown [tag.go](tag.go)
 - Tag aliasing.
 - Global Tag String White/Blacklist registry
     - Allow per tag parse includes/excludes but also global excludes that can be set. (WIP)
 - Split Package into PAVE-Parser and PAVE-Validator
 - Implement Validation
-- Add support for custom parsers that can be registered with the Validator. (DONE)
-- Add support for custom validators that can be registered with the Validator.
+- Add support for custom parsers that can be registered with the Registry. (DONE)
+- Add support for custom validators that can be registered with the Registry.
 */
