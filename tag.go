@@ -16,10 +16,10 @@ var (
 	ErrInvalidBindingTagFormat  = errors.New("invalid binding tag format")
 	ErrInvalidBindingInfoFormat = errors.New("invalid binding info format")
 	ErrUnallowedBindingModifier = errors.New("binding modifier is not allowed")
-	ErrEmptyTagValue            = errors.New("tag value cannot be empty")
+	ErrEmptyTagValue            = errors.New("tag value cannot be empty for non-string types")
 )
 
-// This file contains the tag parser for the pave pacckage. It is responsible
+// This file contains the tag parser for the pave package. It is responsible
 // for parsing the tags associated with fields in structs that are used for
 // parsing and validation. The tag parser interprets the tags and generates
 // the appropriate parsing and validation logic based on the specified tags.
@@ -222,7 +222,7 @@ func decodeDefaultTagV2(field reflect.StructField) (DefaultTag, error) {
 	if defaultTag, ok := field.Tag.Lookup("default"); ok {
 		// Parse the default tag
 		value := strings.TrimSpace(defaultTag)
-		if value == "" {
+		if value == "" && field.Type.Kind() != reflect.String {
 			return DefaultTag{}, fmt.Errorf("default %w", ErrEmptyTagValue)
 		}
 		return DefaultTag{Value: value}, nil

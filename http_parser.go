@@ -213,9 +213,7 @@ func (mgr *HTTPBindingManager) HeaderValue(
 	})
 
 	// Canonicalize the key to lower case
-	key = http.CanonicalHeaderKey(key)
-
-	value, exists := headers[key]
+	value, exists := headers[http.CanonicalHeaderKey(key)]
 	if !exists || value == "" {
 		return BindingResultNotFound()
 	}
